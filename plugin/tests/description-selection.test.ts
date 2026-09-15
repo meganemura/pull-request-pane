@@ -14,6 +14,7 @@ import {
   orderedRangeOf,
   posOf,
   selectedColumnsOf,
+  visualRowsOf,
 } from '../hooks/description-selection'
 
 describe('description-selection geometry', () => {
@@ -60,6 +61,34 @@ describe('description-selection geometry', () => {
       }
     }
   })
+
+  test('visualRowsOf leaves a line alone when it fits, one row with startCol 0', () => {
+    expect(visualRowsOf(['abcdef'], 10)).toEqual([{ line: 0, startCol: 0, text: 'abcdef' }])
+  })
+
+  test('visualRowsOf wraps on the last space at or before the limit, consuming it', () => {
+    expect(visualRowsOf(['abc def ghi'], 7)).toEqual([
+      { line: 0, startCol: 0, text: 'abc def' },
+      { line: 0, startCol: 8, text: 'ghi' },
+    ])
+  })
+
+  test('visualRowsOf hard-breaks a word wider than the width with no space to land on', () => {
+    expect(visualRowsOf(['abcdefghijkl'], 5)).toEqual([
+      { line: 0, startCol: 0, text: 'abcde' },
+      { line: 0, startCol: 5, text: 'fghij' },
+      { line: 0, startCol: 10, text: 'kl' },
+    ])
+  })
+
+  test('visualRowsOf keeps an empty logical line as one empty row', () => {
+    expect(visualRowsOf([''], 10)).toEqual([{ line: 0, startCol: 0, text: '' }])
+  })
+
+  test('visualRowsOf treats non-finite or non-positive columns as no wrapping at all', () => {
+    expect(visualRowsOf(['a long line here'], Number.POSITIVE_INFINITY)).toEqual([{ line: 0, startCol: 0, text: 'a long line here' }])
+    expect(visualRowsOf(['a long line here'], 0)).toEqual([{ line: 0, startCol: 0, text: 'a long line here' }])
+  })
 })
 
 type PointerEvent = { type: string; x: number; y: number }
@@ -75,8 +104,9 @@ function elementsOf() {
 // with a handler that closes over that fresh state — so a `fire` after a `setState` reaches the
 // current drag, not the one the module started with. `claude plugin test plugin`'s kit has
 // nothing built in for this (no such call on its Engine or Mock types), so this is this
-// plugin's own harness, not a kit feature.
-function driveDescriptionSelection(lines: readonly string[], armedRange?: { start: number; end: number }) {
+// plugin's own harness, not a kit feature. `columns` defaults to `Infinity` (no wrapping), same
+// as a fixture text short enough to fit ever needs.
+function driveDescriptionSelection(lines: readonly string[], armedRange?: { start: number; end: number }, columns = Number.POSITIVE_INFINITY) {
   const elements = elementsOf()
   const posted: unknown[] = []
   let state: unknown
@@ -89,6 +119,7 @@ function driveDescriptionSelection(lines: readonly string[], armedRange?: { star
       {
         elements: elements as never,
         state,
+        columns,
         setState: (next: unknown) => {
           state = next
           draw()
@@ -208,7 +239,17 @@ describe('description-selection pointer handling', () => {
     if (line === undefined) throw new Error('expected one row')
 
     expect(line.type).toBe('Box')
-    expect(line.props.children).toEqual([{ type: 'Text', props: { wrap: 'truncate-end', children: 'abcdef' }, children: ['abcdef'] }])
+    expect(line.props.children).toEqual([{ type: 'Text', props: { children: 'abcdef' }, children: ['abcdef'] }])
+  })
+
+  test('a wrapped line still maps a drag to the right characters, across the wrap point', () => {
+    // At columns:7, "abc def ghi" wraps to row 0 "abc def" (startCol 0) and row 1 "ghi" (startCol 8).
+    const drive = driveDescriptionSelection(['abc def ghi'], undefined, 7)
+
+    drive.fire({ type: 'down', x: 1, y: 1 })
+    drive.fire({ type: 'up', x: 3, y: 1 })
+
+    expect(drive.posted).toEqual([{ type: 'selected', start: 9, end: 11 }])
   })
 
   test('an already-armed range stays highlighted with no drag in progress', () => {

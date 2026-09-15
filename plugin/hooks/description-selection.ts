@@ -26,6 +26,12 @@ export type Pos = { line: number; col: number }
 export type OrderedRange = { start: Pos; end: Pos }
 export type SelectionMessage = { type: 'selected'; start: number; end: number } | { type: 'cleared' }
 
+// One screen row: which logical line it comes from, where in that line it starts, and the
+// characters it carries. A logical line the surface would otherwise soft-wrap is split into
+// several of these by `visualRowsOf`, so the module (not the surface) decides where each screen
+// row breaks — and a pointer's `y` can then index this list directly instead of `lines` itself.
+export type VisualRow = { line: number; startCol: number; text: string }
+
 type State = { anchor: Pos; current: Pos } | null
 
 // A position from a pointer event, or from the drag's own memory, clamped onto real text: a
@@ -89,33 +95,95 @@ export function selectedColumnsOf(range: OrderedRange, lineLength: number, lineI
   return { start, end }
 }
 
-// Every run drawn `wrap: 'truncate-end'`: a logical line the surface soft-wrapped onto several
-// screen rows broke the one-row-per-line assumption every position here relies on (a drag
-// looked like it was covering the wrong characters entirely — measured, real-terminal
-// feedback). Truncating instead of wrapping keeps one logical line at exactly one screen row, so
-// `y` always names the right line; a line wider than the pane is cut, not wrapped.
-const LINE_WRAP = 'truncate-end' as const
+// One logical line, greedily word-wrapped to `columns` cells: a break lands on the last space
+// at or before the limit, and a single word wider than `columns` hard-breaks by character (the
+// only way to keep every row within the width at all). `startCol` is the real index into the
+// logical line — not reconstructed later by re-joining words — so a wrapped word's own text
+// still slices correctly out of the original line.
+function wrapLineOf(text: string, columns: number): { startCol: number; text: string }[] {
+  if (!Number.isFinite(columns) || columns <= 0 || text.length <= columns) return [{ startCol: 0, text }]
+  const rows: { startCol: number; text: string }[] = []
+  let rowStart = 0
+  while (rowStart < text.length) {
+    const limit = Math.min(rowStart + columns, text.length)
+    if (limit >= text.length) {
+      rows.push({ startCol: rowStart, text: text.slice(rowStart, limit) })
+      break
+    }
+    let breakAt = -1
+    for (let i = limit; i > rowStart; i -= 1) {
+      if (text[i] === ' ') {
+        breakAt = i
+        break
+      }
+    }
+    if (breakAt === -1) {
+      rows.push({ startCol: rowStart, text: text.slice(rowStart, limit) })
+      rowStart = limit
+    } else {
+      rows.push({ startCol: rowStart, text: text.slice(rowStart, breakAt) })
+      rowStart = breakAt + 1
+    }
+  }
+  return rows
+}
+
+// Every logical line wrapped to `columns` cells, in order. `columns` is the surface's own
+// `columns` (0 before its first layout); passed on as `Infinity` for that one frame, which
+// wraps nothing and lets the surface soft-wrap on its own, same as before this file drew its
+// own rows — the real width arrives on the next call and this takes over from there.
+export function visualRowsOf(lines: readonly string[], columns: number): VisualRow[] {
+  const rows: VisualRow[] = []
+  lines.forEach((line, index) => {
+    for (const row of wrapLineOf(line, columns)) rows.push({ line: index, startCol: row.startCol, text: row.text })
+  })
+  return rows
+}
+
+// A pointer event's cell, as a position in the logical text: `event.y` indexes `visualRows`
+// directly (each is exactly one screen row, by construction), and `event.x` lands within that
+// row's own slice of its logical line, offset by where the row starts.
+function screenPosOf(visualRows: readonly VisualRow[], event: { x: number; y: number }): Pos {
+  const rowIndex = Math.min(Math.max(event.y, 0), Math.max(visualRows.length - 1, 0))
+  const row = visualRows[rowIndex]
+  if (row === undefined) return { line: 0, col: 0 }
+  const col = Math.min(Math.max(event.x, 0), row.text.length)
+  return { line: row.line, col: row.startCol + col }
+}
+
+// The range a drag covers on one screen row, or null where the row is not covered at all: the
+// same logical-line span `selectedColumnsOf` reports, intersected with the row's own
+// `[startCol, startCol + text.length)` slice and rebased to that row's local columns.
+function rowSelectionOf(range: OrderedRange, row: VisualRow, lineLength: number): { start: number; end: number } | null {
+  const cols = selectedColumnsOf(range, lineLength, row.line)
+  if (cols === null) return null
+  const start = Math.max(cols.start, row.startCol)
+  const end = Math.min(cols.end, row.startCol + row.text.length)
+  if (start > end) return null
+  return { start: start - row.startCol, end: end - row.startCol }
+}
 
 // One row: plain text, or split into an unhighlighted prefix, an inverse-video run for the
-// covered part, and an unhighlighted suffix. A zero-width `columns` on a non-empty line (the
+// covered part, and an unhighlighted suffix. A zero-width `columns` on a non-empty row (the
 // cell right after 'down', before any 'move') draws as plain text — inserting a one-space
 // highlighted run there, as a real (non-empty) selection does, turned the clicked character
 // into a false blank (measured: real-terminal feedback). A zero-width `columns` on a genuinely
-// empty line (one a multi-line drag covers in full) still draws as one highlighted space, so a
-// blank line inside a real selection still shows as covered.
+// empty row (one a multi-line drag covers in full) still draws as one highlighted space, so a
+// blank line inside a real selection still shows as covered. No `wrap` prop: every row already
+// fits `columns` by construction (visualRowsOf), so there is nothing left to cut or wrap.
 function lineRowOf(elements: ClientElements, key: string, text: string, columns: { start: number; end: number } | null): RenderElement {
   const { Box, Text } = elements
   const isFalseBlank = columns !== null && columns.start === columns.end && text !== ''
   if (columns === null || isFalseBlank) {
-    return Box({ key, children: [Text({ wrap: LINE_WRAP, children: text === '' ? ' ' : text })] })
+    return Box({ key, children: [Text({ children: text === '' ? ' ' : text })] })
   }
   const before = text.slice(0, columns.start)
   const selected = text.slice(columns.start, columns.end)
   const after = text.slice(columns.end)
   const children: RenderElement[] = []
-  if (before !== '') children.push(Text({ wrap: LINE_WRAP, children: before }))
-  children.push(Text({ inverse: true, wrap: LINE_WRAP, children: selected === '' ? ' ' : selected }))
-  if (after !== '') children.push(Text({ wrap: LINE_WRAP, children: after }))
+  if (before !== '') children.push(Text({ children: before }))
+  children.push(Text({ inverse: true, children: selected === '' ? ' ' : selected }))
+  if (after !== '') children.push(Text({ children: after }))
   return Box({ key, flexDirection: 'row', children })
 }
 
@@ -129,6 +197,7 @@ function lineRowOf(elements: ClientElements, key: string, text: string, columns:
 // from an earlier call.
 function onPointerOf(
   lines: readonly string[],
+  visualRows: readonly VisualRow[],
   state: State,
   armedRange: { start: number; end: number } | undefined,
   setState: (next: State) => void,
@@ -136,13 +205,13 @@ function onPointerOf(
 ) {
   return (event: { type: string; x: number; y: number }) => {
     if (event.type === 'down') {
-      const pos = clampPos(lines, { line: event.y, col: event.x })
+      const pos = screenPosOf(visualRows, event)
       setState({ anchor: pos, current: pos })
       return
     }
     if (event.type === 'move') {
       if (state === null) return
-      const pos = clampPos(lines, { line: event.y, col: event.x })
+      const pos = screenPosOf(visualRows, event)
       setState({ anchor: state.anchor, current: pos })
       return
     }
@@ -152,7 +221,7 @@ function onPointerOf(
       // rather than trusting a 'move' to have landed there first. A drag with no 'move' in
       // between (a fast release, or a terminal that only sends 'move' on real movement) would
       // otherwise end up comparing the anchor to itself and reporting an empty range.
-      const pos = clampPos(lines, { line: event.y, col: event.x })
+      const pos = screenPosOf(visualRows, event)
       const range = orderedRangeOf(lines, state.anchor, pos)
       if (isEmptyRange(range)) {
         if (armedRange !== undefined) post({ type: 'cleared' })
@@ -168,13 +237,14 @@ function onPointerOf(
 // like one — the module never reaches for anything else on it.
 export function drawDescriptionSelection(
   props: DescriptionSelectionProps,
-  surface: Pick<ClientSurface<State>, 'elements' | 'state' | 'setState' | 'onPointer' | 'post'>,
+  surface: Pick<ClientSurface<State>, 'elements' | 'state' | 'setState' | 'onPointer' | 'post' | 'columns'>,
 ): RenderElement {
-  const { elements, state, setState, onPointer, post } = surface
+  const { elements, state, setState, onPointer, post, columns } = surface
   const lines = props.lines
   const armedRange = props.armedRange
+  const visualRows = visualRowsOf(lines, columns > 0 ? columns : Number.POSITIVE_INFINITY)
 
-  onPointer(onPointerOf(lines, state ?? null, armedRange, setState, (data) => post(data)))
+  onPointer(onPointerOf(lines, visualRows, state ?? null, armedRange, setState, (data) => post(data)))
 
   // A live drag takes over the drawing; otherwise an already-armed range (from a past drag)
   // stays highlighted, so the person can see what is about to ride their next prompt without
@@ -187,7 +257,9 @@ export function drawDescriptionSelection(
   return Box({
     key: 'root',
     flexDirection: 'column',
-    children: lines.map((line, index) => lineRowOf(elements, `line:${index}`, line, range === null ? null : selectedColumnsOf(range, line.length, index))),
+    children: visualRows.map((row, index) =>
+      lineRowOf(elements, `row:${index}`, row.text, range === null ? null : rowSelectionOf(range, row, lines[row.line]?.length ?? 0)),
+    ),
   })
 }
 

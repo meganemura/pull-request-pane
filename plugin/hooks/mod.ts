@@ -563,7 +563,6 @@ function textSelectionOf(ui: Ui, key: string, suffix: string, text: string, arme
     module: './description-selection.ts',
     props: armedRange === undefined ? { lines } : { lines, armedRange },
     width: '100%',
-    height: lines.length,
   })
 }
 

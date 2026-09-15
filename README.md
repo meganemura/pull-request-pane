@@ -57,9 +57,10 @@ toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <rev
 (GitHub Actions, CircleCI, whatever produced it) where one exists — hover a linked check and it
 highlights, so it reads as clickable. Issues have no status.
 
-Each entry's description is drawn in full below its title and status, not cut to a few lines. A
-single logical line wider than the pane is cut, not wrapped, so a drag's position always matches
-a real character — no ellipsis marks the cut yet.
+Each entry's description is drawn in full below its title and status, not cut to a few lines,
+and not to a few characters either: a logical line wider than the pane wraps onto as many screen
+rows as it needs, with no `…` cutting any part of it, and a drag's position still matches a real
+character across the wrap.
 
 ## Persistence
 

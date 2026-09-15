@@ -171,6 +171,22 @@ describe('mod', () => {
     expect(text).toContain('Add login')
   })
 
+  test('the whole description is drawn, not cut to a few lines', async ($, on) => {
+    const body = ['line one', 'line two', 'line three', 'line four', 'line five'].join('\n')
+    world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body, url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+
+    const text = textOf(await $.ui.render(PANE))
+
+    expect(text).toContain('line four')
+    expect(text).toContain('line five')
+  })
+
   test('a closing keyword in the PR body pulls in the issue it closes', async ($, on) => {
     world(on, {
       branch: 'feature',
@@ -265,8 +281,16 @@ describe('mod', () => {
     const statusCalls = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
     expect(statusCalls).toHaveLength(1)
 
-    const text = textOf(await $.ui.render(PANE))
-    expect(text).toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
+    const collapsed = textOf(await $.ui.render(PANE))
+    expect(collapsed).toContain('▶ checks')
+    expect(collapsed).toContain('failing')
+    expect(collapsed).not.toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
+
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:checks-toggle:button' })
+
+    const expanded = textOf(await $.ui.render(PANE))
+    expect(expanded).toContain('▼ checks')
+    expect(expanded).toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
   })
 
   test('closing the pane stops the poll', async ($, on) => {

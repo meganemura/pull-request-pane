@@ -38,10 +38,13 @@ typed there.
 
 ## Checks, review and mergeability
 
-While the pane is open, each pull request's status refreshes every 60 seconds and is drawn
-beside its entry: `✓<pass> ✗<fail> …<pending> · <review decision> · <mergeable>`. The line
-turns red when a check has failed, yellow when one is still running, green once every check
-has passed. Issues have no status line.
+While the pane is open, each pull request's status refreshes every 60 seconds. It draws as a
+`▶ checks` toggle and one coloured word — `failing` (red), `running` (yellow), `passing`
+(green), or `no checks` — so you can tell at a glance whether to look further. Press the
+toggle for the detail: `✓<pass> ✗<fail> …<pending> · <review decision> · <mergeable>`. Issues
+have no status.
+
+Each entry's description is drawn in full below its title and status, not cut to a few lines.
 
 ## Status
 

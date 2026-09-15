@@ -92,6 +92,7 @@ type State = {
   isRefreshing: boolean
   isQueued: boolean
   quoted: Set<string>
+  expandedStatus: Set<string>
   pollTimer: Timer | null
   isPolling: boolean
   statusAt: string | null
@@ -396,10 +397,7 @@ type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text'>
 
 function descriptionLinesOf(ui: Ui, body: string): RenderElement[] {
   const { Text } = ui
-  return body
-    .split('\n')
-    .slice(0, 3)
-    .map((line) => Text({ dimColor: true, children: line }))
+  return body.split('\n').map((line) => Text({ dimColor: true, children: line }))
 }
 
 function checksSegmentOf(checks: PrStatus['checks']): string {
@@ -426,6 +424,43 @@ function statusLineOf(ui: Ui, status: PrStatus): RenderElement {
   return Text({ ...(color === undefined ? {} : { color }), children: segments.join(' · ') })
 }
 
+function statusWordOf(checks: PrStatus['checks']): string {
+  if (checks.fail > 0) return 'failing'
+  if (checks.pending > 0) return 'running'
+  if (checks.pass > 0) return 'passing'
+  return 'no checks'
+}
+
+// Collapsed by default: one word (coloured, so red/yellow/green reads before the word does)
+// answers "is anything failing, still running, or all clear" without reading numbers. The
+// counts, review decision and mergeable state are one press away, not gone.
+function checksSectionOf(ui: Ui, key: string, status: PrStatus, state: State, host: Host): RenderElement[] {
+  const { Box, Button, Text } = ui
+  const isExpanded = state.expandedStatus.has(key)
+  const color = statusColorOf(status.checks)
+  const toggleKey = `${key}:checks-toggle`
+
+  const toggleRow = Box({
+    key: toggleKey,
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [
+      Button({
+        key: `${toggleKey}:button`,
+        label: `${isExpanded ? '▼' : '▶'} checks`,
+        onPress: () => {
+          if (isExpanded) state.expandedStatus.delete(key)
+          else state.expandedStatus.add(key)
+          host.invalidate()
+        },
+      }),
+      Text({ ...(color === undefined ? {} : { color }), children: statusWordOf(status.checks) }),
+    ],
+  })
+
+  return isExpanded ? [toggleRow, statusLineOf(ui, status)] : [toggleRow]
+}
+
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
   const { Box, Button, Text } = ui
   const key = entryKeyOf(entry)
@@ -449,7 +484,7 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string
           })
         },
       }),
-      ...(entry.kind === 'pr' && entry.status ? [statusLineOf(ui, entry.status)] : []),
+      ...(entry.kind === 'pr' && entry.status ? checksSectionOf(ui, key, entry.status, state, host) : []),
       ...descriptionLinesOf(ui, entry.body),
     ],
   })
@@ -485,6 +520,7 @@ export function register(on: On) {
     isRefreshing: false,
     isQueued: false,
     quoted: new Set(),
+    expandedStatus: new Set(),
     pollTimer: null,
     isPolling: false,
     statusAt: null,

@@ -27,16 +27,17 @@ Type `/pull-request-pane` to show or hide the pane.
 ## Attach a description or a title
 
 Each entry shows its identifier (`#<n> PR <state>` for a pull request, `#<n> Issue <state>` for
-an issue), then its title, then — for a pull request — its checks, then its full description.
-Drag over the title or the description to attach it: the covered text highlights as you drag,
-and releasing arms that selection to ride your next prompt — the status line says so, and the
-highlight stays, colored, as the only sign it is armed (dragging over all of a field arms the
-whole thing the same way). Nothing is written into the prompt box — type your instruction as
-you normally would, whatever is already there included, and press Enter. Claude reads the
-attached text beside your prompt and edits it on GitHub with `gh pr edit --body` (the
-description) or `gh pr edit --title` (the title). Click the highlighted text again, with no
-drag, to drop it before it rides anywhere. Only one selection is armed at a time — arming
-another replaces it.
+an issue) as a link to it on GitHub — hover it and it highlights — then a blank line, its
+title, another blank line, its checks (a pull request only), another blank line, then its full
+description. Drag over the title or the description to attach it: the covered text highlights
+as you drag, and releasing arms that selection to ride your next prompt — the status line says
+so, and the highlight stays, colored, as the only sign it is armed (dragging over all of a field
+arms the whole thing the same way). Nothing is written into the prompt box — type your
+instruction as you normally would, whatever is already there included, and press Enter. Claude
+reads the attached text beside your prompt and edits it on GitHub with `gh pr edit --body` (the
+description) or `gh pr edit --title` (the title). Click anywhere in that same field again, with
+no drag, to drop it before it rides anywhere — on the highlight or away from it, either drops
+it. Only one selection is armed at a time — arming another replaces it.
 
 Its title and description stop refreshing while armed, so what is about to ride your prompt
 does not change out from under you before you press Enter. Checks, review decision and
@@ -57,7 +58,8 @@ toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <rev
 highlights, so it reads as clickable. Issues have no status.
 
 Each entry's description is drawn in full below its title and status, not cut to a few lines. A
-single line longer than the pane is wide does not wrap for the drag.
+single logical line wider than the pane is cut, not wrapped, so a drag's position always matches
+a real character — no ellipsis marks the cut yet.
 
 ## Persistence
 

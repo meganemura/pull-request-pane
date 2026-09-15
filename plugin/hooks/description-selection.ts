@@ -89,6 +89,13 @@ export function selectedColumnsOf(range: OrderedRange, lineLength: number, lineI
   return { start, end }
 }
 
+// Every run drawn `wrap: 'truncate-end'`: a logical line the surface soft-wrapped onto several
+// screen rows broke the one-row-per-line assumption every position here relies on (a drag
+// looked like it was covering the wrong characters entirely — measured, real-terminal
+// feedback). Truncating instead of wrapping keeps one logical line at exactly one screen row, so
+// `y` always names the right line; a line wider than the pane is cut, not wrapped.
+const LINE_WRAP = 'truncate-end' as const
+
 // One row: plain text, or split into an unhighlighted prefix, an inverse-video run for the
 // covered part, and an unhighlighted suffix. A zero-width `columns` on a non-empty line (the
 // cell right after 'down', before any 'move') draws as plain text — inserting a one-space
@@ -100,26 +107,26 @@ function lineRowOf(elements: ClientElements, key: string, text: string, columns:
   const { Box, Text } = elements
   const isFalseBlank = columns !== null && columns.start === columns.end && text !== ''
   if (columns === null || isFalseBlank) {
-    return Box({ key, children: [Text({ children: text === '' ? ' ' : text })] })
+    return Box({ key, children: [Text({ wrap: LINE_WRAP, children: text === '' ? ' ' : text })] })
   }
   const before = text.slice(0, columns.start)
   const selected = text.slice(columns.start, columns.end)
   const after = text.slice(columns.end)
   const children: RenderElement[] = []
-  if (before !== '') children.push(Text({ children: before }))
-  children.push(Text({ inverse: true, children: selected === '' ? ' ' : selected }))
-  if (after !== '') children.push(Text({ children: after }))
+  if (before !== '') children.push(Text({ wrap: LINE_WRAP, children: before }))
+  children.push(Text({ inverse: true, wrap: LINE_WRAP, children: selected === '' ? ' ' : selected }))
+  if (after !== '') children.push(Text({ wrap: LINE_WRAP, children: after }))
   return Box({ key, flexDirection: 'row', children })
 }
 
 // The pointer handler: 'down' starts a drag at the cell under the pointer, 'move' extends it
 // (ignored before a 'down' started one — a hover with no button held), 'up' posts what the drag
-// covered and ends it. A drag that never moved (a plain click) posts `cleared` only when it
-// landed inside `armedRange` — that is how a person drops an armed selection by clicking it
-// again; a click elsewhere posts nothing, so it neither disarms an unrelated selection nor
-// starts one of its own (a real drag is what starts a new one). Registered fresh on every call,
-// which is how each render's `state` reaches the closure without a stale one from an earlier
-// call.
+// covered and ends it. A drag that never moved (a plain click) posts `cleared` whenever
+// something is armed here, anywhere in this text — not only a click landing inside the
+// highlight — since a click outside it dropping nothing read as unnatural (real-terminal
+// feedback: clicking away from a selection is how clearing one usually works). Registered fresh
+// on every call, which is how each render's `state` reaches the closure without a stale one
+// from an earlier call.
 function onPointerOf(
   lines: readonly string[],
   state: State,
@@ -148,8 +155,7 @@ function onPointerOf(
       const pos = clampPos(lines, { line: event.y, col: event.x })
       const range = orderedRangeOf(lines, state.anchor, pos)
       if (isEmptyRange(range)) {
-        const offset = absoluteOffsetOf(lines, pos)
-        if (armedRange !== undefined && offset >= armedRange.start && offset < armedRange.end) post({ type: 'cleared' })
+        if (armedRange !== undefined) post({ type: 'cleared' })
       } else {
         post({ type: 'selected', start: absoluteOffsetOf(lines, range.start), end: absoluteOffsetOf(lines, range.end) })
       }

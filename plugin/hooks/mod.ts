@@ -689,25 +689,39 @@ function checksRowsOf(ui: Ui, key: string, entry: Entry, state: State, host: Hos
   return [ui.Text({ dimColor: true, children: 'fetching checks…' })]
 }
 
+// The identifier line is a `Link` to the entry's own GitHub page — hovering it highlights (the
+// same cyan every other link in this pane uses), so it reads as clickable the same way a linked
+// check does. Wrapped in its own keyed Box: the hover colour is refused outside one.
+function identifierRowOf(ui: Ui, key: string, entry: Entry): RenderElement {
+  const { Box, Link, Text } = ui
+  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
+  const label = `#${entry.number} ${kindWord} ${entry.state}`
+  return Box({
+    key: `${key}:identifier`,
+    children: [Link({ href: entry.url, children: [Text({ hover: { color: LINK_HOVER_COLOR }, children: label })] })],
+  })
+}
+
 // No button: a press-to-arm-the-whole-thing control was redundant once a drag could already
 // cover all of a field's text, and it needed its own separate "(armed)" label where a range arm
 // already has the highlight itself for feedback (real-terminal feedback: the drag-select design
-// this note superseded, docs/decisions/0007). The identifier line is now plain text — number,
-// kind, GitHub state — with the title and description each their own textSelectionOf row below
-// it, both drag-selectable.
+// this note superseded, docs/decisions/0007). The title and description are each their own
+// textSelectionOf row, both drag-selectable. `rowGap` separates the identifier, the title, the
+// checks (grouped into one child so the gap lands around them, not between each check line) and
+// the description from each other — asked for, to make the entry easier to read at a glance.
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host): RenderElement {
-  const { Box, Text } = ui
+  const { Box } = ui
   const key = entryKeyOf(entry)
-  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
-  const label = `#${entry.number} ${kindWord} ${entry.state}`
+  const checksRows = checksRowsOf(ui, key, entry, state, host)
 
   return Box({
     key,
     flexDirection: 'column',
+    rowGap: 1,
     children: [
-      Text({ children: label }),
+      identifierRowOf(ui, key, entry),
       textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, armedRangeFor(state, key, 'title')),
-      ...checksRowsOf(ui, key, entry, state, host),
+      ...(checksRows.length === 0 ? [] : [Box({ key: `${key}:checks`, flexDirection: 'column', children: checksRows })]),
       textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, armedRangeFor(state, key, 'description')),
     ],
   })
@@ -729,7 +743,9 @@ function paneOf(ui: Ui, state: State, host: Host): RenderElement {
     flexDirection: 'column',
     paddingTop: 1,
     paddingRight: 1,
-    children: [Box({ flexDirection: 'column', children: rows }), Box({ flexDirection: 'column', marginTop: 1, children: footerLines })],
+    // `rowGap` between entries, not before the first or after the last — a blank line
+    // separating one entry from the next, asked for alongside the gaps within one entry.
+    children: [Box({ flexDirection: 'column', rowGap: 1, children: rows }), Box({ flexDirection: 'column', marginTop: 1, children: footerLines })],
   })
 }
 

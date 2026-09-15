@@ -133,13 +133,13 @@ describe('description-selection pointer handling', () => {
     expect(drive.posted).toEqual([{ type: 'cleared' }])
   })
 
-  test('a click landing outside the armed range posts nothing: it neither drops nor starts one', () => {
+  test('a click landing outside the armed range also posts cleared: clicking away drops it too', () => {
     const drive = driveDescriptionSelection(['line one', 'line two'], { start: 0, end: 8 })
 
     drive.fire({ type: 'down', x: 2, y: 1 })
     drive.fire({ type: 'up', x: 2, y: 1 })
 
-    expect(drive.posted).toEqual([])
+    expect(drive.posted).toEqual([{ type: 'cleared' }])
   })
 
   test('a real drag posts a new selection even when it starts inside the armed range', () => {
@@ -208,7 +208,7 @@ describe('description-selection pointer handling', () => {
     if (line === undefined) throw new Error('expected one row')
 
     expect(line.type).toBe('Box')
-    expect(line.props.children).toEqual([{ type: 'Text', props: { children: 'abcdef' }, children: ['abcdef'] }])
+    expect(line.props.children).toEqual([{ type: 'Text', props: { wrap: 'truncate-end', children: 'abcdef' }, children: ['abcdef'] }])
   })
 
   test('an already-armed range stays highlighted with no drag in progress', () => {

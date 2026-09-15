@@ -234,6 +234,8 @@ describe('mod', () => {
     const tree = await $.ui.render(PANE)
 
     expect(textOf(tree)).toContain('#42')
+    // The identifier line is a Link to the pull request itself.
+    expect(linksOf(tree)).toEqual([{ href: 'https://github.com/acme/app/pull/42', text: '#42 PR OPEN' }])
     // The title is drawn by its own textSelectionOf row (a Client, opaque to textOf), not the
     // Button's label — see docs/decisions/0006.
     expect(clientPropsOf(tree, 'pr:42:title-select')).toEqual({ lines: ['Add login'] })
@@ -469,7 +471,10 @@ describe('mod', () => {
     expect(lines.find((line) => line.text === ' deploy-check')).toEqual({ text: ' deploy-check', hoverColor: 'cyan' })
 
     const links = linksOf(tree)
-    expect(links).toEqual([{ href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗\n deploy-check' }])
+    expect(links).toEqual([
+      { href: 'https://github.com/acme/app/pull/42', text: '#42 PR OPEN' },
+      { href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗\n deploy-check' },
+    ])
   })
 
   test('closing the pane stops the poll', async ($, on) => {

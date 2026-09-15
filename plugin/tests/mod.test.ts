@@ -72,7 +72,7 @@ function world(on: On, options: WorldOptions = {}) {
     }
 
     if (cmd === 'gh' && rest[0] === 'repo' && rest[1] === 'view') {
-      return { value: { exitCode: 0, stdout: `${options.repo ?? 'acme/app'}\n`, stderr: '' } }
+      return { value: { exitCode: 0, stdout: `${options.repo ?? 'meganemura/app'}\n`, stderr: '' } }
     }
 
     if (cmd === 'gh' && rest[0] === 'pr' && rest[1] === 'list') {
@@ -225,8 +225,8 @@ describe('mod', () => {
   test('a pull request on the branch appears in the rendered pane', async ($, on) => {
     world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
@@ -235,7 +235,7 @@ describe('mod', () => {
 
     expect(textOf(tree)).toContain('#42')
     // The identifier line is a Link to the pull request itself.
-    expect(linksOf(tree)).toEqual([{ href: 'https://github.com/acme/app/pull/42', text: '#42 PR OPEN' }])
+    expect(linksOf(tree)).toEqual([{ href: 'https://github.com/meganemura/app/pull/42', text: '#42 PR OPEN' }])
     // The title is drawn by its own textSelectionOf row (a Client, opaque to textOf), not the
     // Button's label — see docs/decisions/0006.
     expect(clientPropsOf(tree, 'pr:42:title-select')).toEqual({ lines: ['Add login'] })
@@ -245,8 +245,8 @@ describe('mod', () => {
     const body = ['line one', 'line two', 'line three', 'line four', 'line five'].join('\n')
     world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body, url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body, url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
@@ -259,9 +259,9 @@ describe('mod', () => {
   test('a closing keyword in the PR body pulls in the issue it closes', async ($, on) => {
     world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'Closes #12', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-      issues: { 12: { number: 12, title: 'Login is broken', body: 'na', url: 'https://github.com/acme/app/issues/12', state: 'OPEN' } },
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'Closes #12', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
+      issues: { 12: { number: 12, title: 'Login is broken', body: 'na', url: 'https://github.com/meganemura/app/issues/12', state: 'OPEN' } },
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
@@ -324,14 +324,14 @@ describe('mod', () => {
     })
 
     test('contextTextOf quotes only the range, from the title or the description as asked', () => {
-      const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }
+      const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }
 
-      expect(contextTextOf(entry, 'acme/app', 'description', { start: 0, end: 8 })).toBe(
-        "The user attached a selection from acme/app pull request #42's description from pull-request-pane to this prompt. " +
+      expect(contextTextOf(entry, 'meganemura/app', 'description', { start: 0, end: 8 })).toBe(
+        "The user attached a selection from meganemura/app pull request #42's description from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one',
       )
-      expect(contextTextOf(entry, 'acme/app', 'title', { start: 0, end: entry.title.length })).toBe(
-        "The user attached a selection from acme/app pull request #42's title from pull-request-pane to this prompt. " +
+      expect(contextTextOf(entry, 'meganemura/app', 'title', { start: 0, end: entry.title.length })).toBe(
+        "The user attached a selection from meganemura/app pull request #42's title from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --title`:\n> Add login',
       )
     })
@@ -375,8 +375,8 @@ describe('mod', () => {
   test('rendering the pane never spawns', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
@@ -391,8 +391,8 @@ describe('mod', () => {
   test('opening the pane starts a 60s status poll that draws the checks', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
       statuses: {
         42: {
           isDraft: false,
@@ -402,7 +402,7 @@ describe('mod', () => {
             { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
             { name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
             { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/acme/app/actions/runs/1/job/2' },
+            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/meganemura/app/actions/runs/1/job/2' },
             { name: 'e2e', status: 'IN_PROGRESS', conclusion: null },
             { name: 'docs', status: 'IN_PROGRESS', conclusion: null },
           ],
@@ -439,8 +439,8 @@ describe('mod', () => {
   test('each check keeps its own colour; the summary line and the failing check do not share one', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
       statuses: {
         42: {
           isDraft: false,
@@ -448,7 +448,7 @@ describe('mod', () => {
           reviewDecision: 'APPROVED',
           statusCheckRollup: [
             { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/acme/app/actions/runs/1/job/2' },
+            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/meganemura/app/actions/runs/1/job/2' },
           ],
         },
       },
@@ -472,16 +472,16 @@ describe('mod', () => {
 
     const links = linksOf(tree)
     expect(links).toEqual([
-      { href: 'https://github.com/acme/app/pull/42', text: '#42 PR OPEN' },
-      { href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗\n deploy-check' },
+      { href: 'https://github.com/meganemura/app/pull/42', text: '#42 PR OPEN' },
+      { href: 'https://github.com/meganemura/app/actions/runs/1/job/2', text: '✗\n deploy-check' },
     ])
   })
 
   test('closing the pane stops the poll', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
       statuses: { 42: { isDraft: false, mergeable: 'MERGEABLE', reviewDecision: '', statusCheckRollup: [] } },
     })
     await $.session.start(SESSION)
@@ -499,8 +499,8 @@ describe('mod', () => {
   test('a hot reload rehydrates from the store instead of showing reading…', async ($, on) => {
     world(on, {
       branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)

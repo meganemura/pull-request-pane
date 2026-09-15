@@ -356,6 +356,7 @@ async function pollStatuses(state: State): Promise<void> {
   const host = state.host
   if (host === null || state.isPolling) return
   state.isPolling = true
+  host.invalidate()
   try {
     const cwd = await host.cwd()
     const numbers = state.entries.filter((entry) => entry.kind === 'pr').map((entry) => entry.number)
@@ -365,9 +366,9 @@ async function pollStatuses(state: State): Promise<void> {
       state.entries = state.entries.map((entry) => (entry.kind === 'pr' && entry.number === number ? { ...entry, status } : entry))
     }
     state.statusAt = new Date().toLocaleTimeString()
-    host.invalidate()
   } finally {
     state.isPolling = false
+    host.invalidate()
   }
 }
 
@@ -476,20 +477,21 @@ function outcomeColorOf(outcome: CheckOutcome): string | undefined {
 // as the check's state changing under the pointer.
 const LINK_HOVER_COLOR = 'cyan'
 
-// One row per check, each carrying its own outcome's colour rather than the whole section
-// sharing one. Wrapped in a `Link` to the check's own run when gh gave one (a CheckRun's
-// `detailsUrl`, a StatusContext's `targetUrl`); plain text otherwise. The hover colour needs the
-// enclosing `Box` to be keyed (the d.ts refuses it outside one), which this row's `Box` already is.
+// One row per check: the symbol carries the outcome's colour, the name stays the surface's
+// plain text colour so a hover's colour is the only colour change it ever shows — a name
+// already coloured red or green buried a hover highlight in a colour-on-colour change that was
+// hard to see (measured, real terminal). Wrapped in a `Link` to the check's own run when gh
+// gave one (a CheckRun's `detailsUrl`, a StatusContext's `targetUrl`); plain text otherwise.
+// The hover colour needs the enclosing `Box` to be keyed (the d.ts refuses it outside one),
+// which this row's `Box` already is.
 function checkItemLineOf(ui: Ui, key: string, item: CheckItem): RenderElement {
   const { Box, Link, Text } = ui
   const color = outcomeColorOf(item.outcome)
-  const label = Text({
-    ...(color === undefined ? {} : { color }),
-    ...(item.url === undefined ? {} : { hover: { color: LINK_HOVER_COLOR } }),
-    children: `${outcomeSymbolOf(item.outcome)} ${item.name}`,
-  })
-  const content = item.url === undefined ? label : Link({ href: item.url, children: [label] })
-  return Box({ key, children: [content] })
+  const symbol = Text({ ...(color === undefined ? {} : { color }), children: outcomeSymbolOf(item.outcome) })
+  const name = Text({ ...(item.url === undefined ? {} : { hover: { color: LINK_HOVER_COLOR } }), children: ` ${item.name}` })
+  const row = [symbol, name]
+  const content = item.url === undefined ? row : [Link({ href: item.url, children: row })]
+  return Box({ key, flexDirection: 'row', children: content })
 }
 
 // Collapsed by default: one word (coloured, so red/yellow/green reads before the word does)
@@ -529,8 +531,17 @@ function checksSectionOf(ui: Ui, key: string, status: PrStatus, state: State, ho
   ]
 }
 
+// A PR whose status has not landed yet says so, rather than leaving a gap the same as an
+// issue's — the poll is already running (see `command.run`'s immediate `pollStatuses`), so
+// this is a "coming" state, not a "there is nothing here" one.
+function checksRowsOf(ui: Ui, key: string, entry: Entry, state: State, host: Host): RenderElement[] {
+  if (entry.kind !== 'pr') return []
+  if (entry.status) return checksSectionOf(ui, key, entry.status, state, host)
+  return [ui.Text({ dimColor: true, children: 'fetching checks…' })]
+}
+
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
-  const { Box, Button, Text } = ui
+  const { Box, Button } = ui
   const key = entryKeyOf(entry)
   const isQuoted = state.quoted.has(key)
   const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
@@ -552,7 +563,7 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string
           })
         },
       }),
-      ...(entry.kind === 'pr' && entry.status ? checksSectionOf(ui, key, entry.status, state, host) : []),
+      ...checksRowsOf(ui, key, entry, state, host),
       ...descriptionLinesOf(ui, entry.body),
     ],
   })
@@ -566,7 +577,8 @@ function paneOf(ui: Ui, state: State, host: Host, titleMaxChars: number): Render
       : state.entries.map((entry) => entryBoxOf(ui, entry, state, host, state.repo, titleMaxChars))
 
   const refreshedLine = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
-  const footerLines = [Text({ dimColor: true, children: refreshedLine }), ...(state.statusAt === null ? [] : [Text({ dimColor: true, children: `status ${state.statusAt}` })])]
+  const statusLine = state.isPolling ? 'status updating…' : state.statusAt === null ? null : `status ${state.statusAt}`
+  const footerLines = [Text({ dimColor: true, children: refreshedLine }), ...(statusLine === null ? [] : [Text({ dimColor: true, children: statusLine })])]
 
   return Box({
     key: 'pull-request-pane',
@@ -621,6 +633,11 @@ export function register(on: On) {
     state.isOpen = true
     startPoll(state, host)
     await refresh(state)
+    // `host.every` only fires after its first full period; without this, the person who just
+    // opened the pane would wait up to POLL_MS for the first status, not just for the poll
+    // after that. Not awaited: entries are already drawn, and the checks section shows its own
+    // "fetching checks…" line until this lands.
+    void pollStatuses(state).catch(() => undefined)
     return { text: 'pull-request-pane shown' }
   })
 

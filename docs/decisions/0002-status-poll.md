@@ -2,6 +2,17 @@
 
 - Status: accepted
 - Date: 2026-09-15
+- Revised: 2026-09-16 — `$.clock.every` only calls its function after the first full period, so
+  a pane opened cold showed no status for up to 60 seconds even though the entries were already
+  on screen. The lead's read: no reason to wait that long for the first one. `command.run` now
+  also fires `pollStatuses` once, unawaited, right after `refresh` finishes (so it has the PR
+  numbers to ask about) and before it answers `{ text: 'pull-request-pane shown' }` — the
+  periodic timer still runs on its own 60-second schedule from when it was registered, so this
+  adds one poll, it does not replace the schedule. Because that first poll is no longer
+  guaranteed to have landed before the first draw, two loading states were added: a PR entry
+  with no status yet draws `fetching checks…` instead of nothing, and the footer's status line
+  reads `status updating…` while any poll (the immediate one or a later scheduled one) is in
+  flight, `status <time>` once it lands. The rest of this note is unchanged by the revision.
 
 ## Context
 

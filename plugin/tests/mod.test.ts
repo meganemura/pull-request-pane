@@ -275,6 +275,7 @@ describe('mod', () => {
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
+    await settle()
     const before = kept.runs.length
 
     await $.ui.render(PANE)
@@ -305,14 +306,15 @@ describe('mod', () => {
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
+    await settle()
 
-    const statusCallsBefore = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
-    expect(statusCallsBefore).toHaveLength(0)
+    const statusCallsAfterOpen = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
+    expect(statusCallsAfterOpen).toHaveLength(1)
 
     await kept.clock.advance(POLL_MS)
 
     const statusCalls = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
-    expect(statusCalls).toHaveLength(1)
+    expect(statusCalls).toHaveLength(2)
 
     const collapsed = textOf(await $.ui.render(PANE))
     expect(collapsed).toContain('▶ checks')
@@ -324,9 +326,9 @@ describe('mod', () => {
     const expanded = textOf(await $.ui.render(PANE))
     expect(expanded).toContain('▼ checks')
     expect(expanded).toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
-    expect(expanded).toContain('✗ deploy-check')
-    expect(expanded).toContain('✓ lint')
-    expect(expanded).toContain('… e2e')
+    expect(expanded).toContain('deploy-check')
+    expect(expanded).toContain('lint')
+    expect(expanded).toContain('e2e')
   })
 
   test('each check keeps its own colour; the summary line and the failing check do not share one', async ($, on) => {
@@ -348,19 +350,23 @@ describe('mod', () => {
     })
     await $.session.start(SESSION)
     await $.command.run(RUN)
-    await kept.clock.advance(POLL_MS)
+    await settle()
     await $.ui.render(PANE)
     await $.ui.press({ plugin: PLUGIN, key: 'pr:42:checks-toggle:button' })
 
     const tree = await $.ui.render(PANE)
     const lines = coloredLinesOf(tree)
 
+    // The symbol carries the outcome's colour; the name stays plain so a hover's colour is the
+    // only colour change a linked check ever shows (see docs/decisions/0003's revision).
     expect(lines.find((line) => line.text.includes('MERGEABLE'))).toEqual({ text: expect.stringContaining('MERGEABLE') })
-    expect(lines.find((line) => line.text === '✓ lint')).toEqual({ text: '✓ lint', color: 'green' })
-    expect(lines.find((line) => line.text === '✗ deploy-check')).toEqual({ text: '✗ deploy-check', color: 'red', hoverColor: 'cyan' })
+    expect(lines.find((line) => line.text === '✓')).toEqual({ text: '✓', color: 'green' })
+    expect(lines.find((line) => line.text === ' lint')).toEqual({ text: ' lint' })
+    expect(lines.find((line) => line.text === '✗')).toEqual({ text: '✗', color: 'red' })
+    expect(lines.find((line) => line.text === ' deploy-check')).toEqual({ text: ' deploy-check', hoverColor: 'cyan' })
 
     const links = linksOf(tree)
-    expect(links).toEqual([{ href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗ deploy-check' }])
+    expect(links).toEqual([{ href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗\n deploy-check' }])
   })
 
   test('closing the pane stops the poll', async ($, on) => {

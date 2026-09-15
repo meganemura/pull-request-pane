@@ -38,9 +38,12 @@ typed there.
 
 ## Checks, review and mergeability
 
-While the pane is open, each pull request's status refreshes every 60 seconds. It draws as a
-`▶ checks` toggle and one coloured word — `failing` (red), `running` (yellow), `passing`
-(green), or `no checks` — so you can tell at a glance whether to look further. Press the
+Each pull request's status is fetched once as soon as the pane opens, and every 60 seconds
+after that while it stays open. A pull request with no status yet shows `fetching checks…`;
+the footer reads `status updating…` while a fetch is in flight, `status <time>` once it lands.
+Once fetched, it draws as a `▶ checks` toggle and one coloured word — `failing` (red),
+`running` (yellow), `passing` (green), or `no checks` — so you can tell at a glance whether to
+look further. Press the
 toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <review decision> ·
 <mergeable>`), then each check by name, coloured by its own outcome and linked to its run
 (GitHub Actions, CircleCI, whatever produced it) where one exists — hover a linked check and it

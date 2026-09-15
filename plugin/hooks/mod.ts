@@ -1,103 +1,429 @@
-// PROBE — not the plugin's real module. Measures one thing the spec could not: whether
-// `$.prompt.fill` reaches the prompt box from a Button's `onPress`, in a real terminal
-// (`claude plugin test` runs no terminal, so this cannot be measured there).
+// The plugin's one function-hooks module (the validator admits one per plugin). `/pull-
+// request-pane` opens a pane beside the transcript with the pull requests and issues related
+// to this session: the checked-out branch's pull request first, then the issues its body
+// closes, then anything the transcript names. A press on an entry's Button quotes its
+// description into the prompt box, so the person types one instruction and Claude edits the
+// description on GitHub through `gh pr edit` / `gh issue edit`.
 //
-// `/pull-request-pane` opens a pane with one Button. Pressing it calls
-// `host.fill` with a fixed string and logs `{ isFilled }` with `$.ui.log`, so the
-// result is visible in the transcript without reading `~/.claude/debug/`.
+// Must NOT know about: how the description gets edited (that is the model's job, driven by
+// the quoted text, never this file's); GitHub authentication (`gh auth status` failing is
+// shown as a line in the pane, not handled); paragraph- or line-level selection (a later
+// milestone); status polling (the next commit adds it, behind the same `Entry.status` field
+// this one leaves undefined).
 //
-// Delete this file's content and replace it with the real module once the probe's
-// result is in report.md. Do not build the real module on an unmeasured assumption
-// about `onPress` → `fill`.
+// It loads only where Claude Code has function hooks enabled. The engine's validator reads
+// this file statically, so every call on `$` is spelled `$.noun.event(...)` and `$` is handed
+// only to the function declarations at the top of the file; the rest of the module holds a
+// `Host`, a bundle of closures built once at `session.start`.
 
-import type { Elements, On } from 'claude-code'
+import type { Elements, On, RenderElement, SessionMessage } from 'claude-code'
 
 const PANE_ID = 'pull-request-pane'
 const PANE_TITLE = 'pull-request-pane'
 const COMMAND = 'pull-request-pane'
 
-const PROBE_TEXT = 'pull-request-pane probe: fixed string from onPress -> $.prompt.fill\n'
+// `gh` reaches the network; this bounds a hung call, not a slow one.
+const GH_TIMEOUT_MS = 15_000
+
+const MAX_BODY_LINES = 60
+const TITLE_PAD_COLUMNS = 12
+const DEFAULT_TITLE_MAX_CHARS = 50
+
+const NOT_IN_REPOSITORY_TEXT = 'not in a GitHub repository'
+const NO_RELATED_TEXT = 'no related pull request or issue'
+
+// The closing-keyword set the spec names, one `#<n>` per match, case-insensitive.
+const CLOSE_KEYWORD_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*#(\d+)/gi
+
+type Entry = {
+  kind: 'pr' | 'issue'
+  number: number
+  title: string
+  body: string
+  url: string
+  state: string
+  status?: PrStatus
+}
+
+// Filled by the status poll (next commit); left undefined by this one.
+type PrStatus = {
+  isDraft: boolean
+  mergeable: string
+  reviewDecision: string
+  checks: { pass: number; fail: number; pending: number; skipped: number }
+  fetchedAt: string
+}
+
+type GhRecord = { number: number; title: string; body: string; url: string; state: string }
 
 type Host = {
+  cwd: () => Promise<string>
+  messages: () => Promise<readonly SessionMessage[]>
+  run: (argv: readonly string[], cwd: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   fill: (text: string) => Promise<{ isFilled: boolean }>
-  log: (text: string) => void
-  invalidate: () => void
   open: () => Promise<void>
   close: () => Promise<void>
+  invalidate: () => void
+  log: (text: string) => void
   register: () => Promise<unknown>
 }
 
-// Same shape as the real module's `hostOf`: `$` is handed only to the top-level
-// function declarations the validator reads statically.
+type State = {
+  host: Host | null
+  isOpen: boolean
+  repo: string | null
+  entries: Entry[]
+  error: string | null
+  refreshedAt: string | null
+  isRefreshing: boolean
+  isQueued: boolean
+  quoted: Set<string>
+}
+
+// The host is a bundle of closures over `$`, built once at `session.start`, so the rest of
+// this file never holds `$` itself. That is the validator's rule and also the seam a test
+// fakes: every world a test builds stubs these same calls with `on(...)`.
 function hostOf($: any): Host {
   return {
+    cwd: () => $.session.cwd(),
+    messages: () => $.session.messages(),
+    run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: GH_TIMEOUT_MS }),
     fill: (text) => $.prompt.fill({ text }),
-    log: (text) => $.ui.log(text),
-    invalidate: () => $.ui.invalidate('ui.render'),
     open: () => $.ui.open({ id: PANE_ID, title: PANE_TITLE }),
     close: () => $.ui.close({ id: PANE_ID }),
-    register: () => $.command.register({ name: COMMAND, description: 'Probe: press the button, watch the prompt box' }),
+    invalidate: () => $.ui.invalidate('ui.render'),
+    log: (text) => $.ui.log(text),
+    register: () => $.command.register({ name: COMMAND, description: 'Show or hide the pull-request-pane' }),
   }
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function firstLineOf(text: string): string {
+  const line = text.split('\n').find((candidate) => candidate.trim() !== '')
+  return (line ?? text).trim()
+}
+
+function entryKeyOf(entry: Pick<Entry, 'kind' | 'number'>): string {
+  return `${entry.kind}:${entry.number}`
+}
+
+// Step 2 of the collection order, and also the cheap gate `command.run` uses to decide
+// whether there is anything to open a pane over: a failing `git rev-parse` here is read the
+// same way whether the cause is "not a repository" or a detached, ref-less checkout.
+async function branchOf(host: Host, cwd: string): Promise<string | null> {
+  try {
+    const { exitCode, stdout } = await host.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], cwd)
+    return exitCode === 0 ? stdout.trim() : null
+  } catch {
+    return null
+  }
+}
+
+type RepoResult = { kind: 'ok'; repo: string } | { kind: 'error'; message: string }
+
+// Step 1. `gh repo view` fails the same way for "no git remote" and for "no GitHub remote";
+// its stderr is the only signal this file has to tell that apart from "gh is missing or
+// unauthenticated", so a stderr naming a remote reads as the friendlier, generic text and
+// anything else is shown as `gh` left it.
+async function repoOf(host: Host, cwd: string): Promise<RepoResult> {
+  try {
+    const { exitCode, stdout, stderr } = await host.run(
+      ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'],
+      cwd,
+    )
+    if (exitCode !== 0) {
+      const line = firstLineOf(stderr || stdout)
+      return { kind: 'error', message: /remote/i.test(line) ? NOT_IN_REPOSITORY_TEXT : line }
+    }
+    return { kind: 'ok', repo: stdout.trim() }
+  } catch (error) {
+    return { kind: 'error', message: firstLineOf(messageOf(error)) }
+  }
+}
+
+// Step 3: the branch's own pull requests, at most 5, oldest decision-relevant fields only.
+async function branchPrsOf(host: Host, cwd: string, branch: string): Promise<Entry[]> {
+  try {
+    const { exitCode, stdout } = await host.run(
+      ['gh', 'pr', 'list', '--head', branch, '--state', 'all', '--json', 'number,title,body,url,state', '--limit', '5'],
+      cwd,
+    )
+    if (exitCode !== 0) return []
+    const parsed = JSON.parse(stdout) as GhRecord[]
+    return parsed.map((pr) => ({ kind: 'pr' as const, number: pr.number, title: pr.title, body: pr.body, url: pr.url, state: pr.state }))
+  } catch {
+    return []
+  }
+}
+
+// Step 6: an issue first, a pull request on its failure. A number that answers neither is
+// dropped rather than failing the whole collection — one stale reference should not blank
+// the pane for every other entry.
+async function fetchEntryOf(host: Host, cwd: string, number: number): Promise<Entry | null> {
+  const issue = await ghViewOf(host, cwd, 'issue', number)
+  if (issue) return issue
+  return ghViewOf(host, cwd, 'pr', number)
+}
+
+async function ghViewOf(host: Host, cwd: string, kind: 'issue' | 'pr', number: number): Promise<Entry | null> {
+  try {
+    const { exitCode, stdout } = await host.run([...['gh', kind, 'view', String(number)], '--json', 'number,title,body,url,state'], cwd)
+    if (exitCode !== 0) return null
+    const parsed = JSON.parse(stdout) as GhRecord
+    return { kind, number: parsed.number, title: parsed.title, body: parsed.body, url: parsed.url, state: parsed.state }
+  } catch {
+    return null
+  }
+}
+
+// Step 4: closing-keyword numbers out of a PR body, and the digits in the branch name.
+function closingNumbersOf(body: string): number[] {
+  return [...body.matchAll(CLOSE_KEYWORD_RE)].map((match) => Number(match[1]))
+}
+
+function branchNumbersOf(branch: string): number[] {
+  return [...branch.matchAll(/\d+/g)].map((match) => Number(match[0]))
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Step 5: `#n` (assumed this repository) and full GitHub URLs naming this repository, out of
+// the transcript's text.
+function transcriptNumbersOf(messages: readonly SessionMessage[], repo: string): number[] {
+  const numbers: number[] = []
+  const urlRe = new RegExp(`github\\.com/${escapeRegExp(repo)}/(?:pull|issues)/(\\d+)`, 'gi')
+  for (const message of messages) {
+    for (const match of message.text.matchAll(/#(\d+)/g)) numbers.push(Number(match[1]))
+    for (const match of message.text.matchAll(urlRe)) numbers.push(Number(match[1]))
+  }
+  return numbers
+}
+
+type CollectResult = { kind: 'ok'; repo: string; entries: Entry[] } | { kind: 'error'; message: string }
+
+// Steps 1-7: gather, dedupe (branch PR, the issues it closes, then the transcript's, first
+// occurrence wins), and fetch. Every failure short of "not a repository" (already refused by
+// `command.run` before this runs) resolves here rather than throwing, so a bad `gh` call
+// leaves the pane with one line instead of leaving the hook to fail open silently.
+async function collectEntries(host: Host, cwd: string, branch: string): Promise<CollectResult> {
+  const repoResult = await repoOf(host, cwd)
+  if (repoResult.kind === 'error') return repoResult
+  const repo = repoResult.repo
+
+  const seen = new Set<number>()
+  const entries: Entry[] = []
+
+  const branchPrs = await branchPrsOf(host, cwd, branch)
+  for (const entry of branchPrs) {
+    if (seen.has(entry.number)) continue
+    seen.add(entry.number)
+    entries.push(entry)
+  }
+
+  const candidateNumbers = [...branchPrs.flatMap((pr) => closingNumbersOf(pr.body)), ...branchNumbersOf(branch)]
+  for (const number of candidateNumbers) {
+    if (seen.has(number)) continue
+    seen.add(number)
+    const entry = await fetchEntryOf(host, cwd, number)
+    if (entry) entries.push(entry)
+  }
+
+  const messages = await host.messages()
+  for (const number of transcriptNumbersOf(messages, repo)) {
+    if (seen.has(number)) continue
+    seen.add(number)
+    const entry = await fetchEntryOf(host, cwd, number)
+    if (entry) entries.push(entry)
+  }
+
+  if (entries.length === 0) return { kind: 'error', message: NO_RELATED_TEXT }
+  return { kind: 'ok', repo, entries }
+}
+
+// The decided fill text: an identifier line naming the repository, kind, number, title and
+// URL, then the body quoted line by line (an empty line becomes a bare `>`), cut at 60 lines
+// with a trailing marker, then one blank line where the cursor lands. English throughout,
+// per the repository's convention for text a person reads — the spec wrote this shape in
+// Japanese prose describing the format, not as the literal string to fill.
+function fillTextOf(entry: Entry, repo: string): string {
+  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
+  const header = `${repo} ${kindWord} #${entry.number} "${entry.title}" (${entry.url}) description:`
+  const rawLines = entry.body.split('\n')
+  const isTruncated = rawLines.length > MAX_BODY_LINES
+  const kept = isTruncated ? rawLines.slice(0, MAX_BODY_LINES) : rawLines
+  const quoted = kept.map((line) => (line === '' ? '>' : `> ${line}`))
+  if (isTruncated) quoted.push(`> …(truncated, ${rawLines.length - MAX_BODY_LINES} more lines)`)
+  return [header, ...quoted, ''].join('\n')
+}
+
+function titleFitOf(title: string, maxChars: number): string {
+  return title.length > maxChars ? `${title.slice(0, Math.max(1, maxChars - 1))}…` : title
+}
+
+// Coalesced, headsign's shape exactly: a refresh asked for while one runs is run once more
+// after it, not in parallel, and there is no separate debounce timer.
+async function refresh(state: State): Promise<void> {
+  const host = state.host
+  if (host === null) return
+  if (state.isRefreshing) {
+    state.isQueued = true
+    return
+  }
+  state.isRefreshing = true
+  try {
+    do {
+      state.isQueued = false
+      const cwd = await host.cwd()
+      const branch = await branchOf(host, cwd)
+      const result = branch === null ? { kind: 'error' as const, message: NOT_IN_REPOSITORY_TEXT } : await collectEntries(host, cwd, branch)
+      if (result.kind === 'ok') {
+        state.repo = result.repo
+        state.entries = result.entries
+        state.error = null
+      } else {
+        state.entries = []
+        state.error = result.message
+      }
+      state.refreshedAt = new Date().toLocaleTimeString()
+      host.invalidate()
+    } while (state.isQueued)
+  } finally {
+    state.isRefreshing = false
+  }
+}
+
+// The real element types, so the typecheck refuses a prop the engine would refuse. `Text`
+// takes no `key`: giving it one drops the whole tree (measured, see the probe this file
+// replaced), so only `Box` and `Button` below ever carry one.
 type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text'>
 
-function paneOf(ui: Ui, host: Host): ReturnType<Ui['Box']> {
+function descriptionLinesOf(ui: Ui, body: string): RenderElement[] {
+  const { Text } = ui
+  return body
+    .split('\n')
+    .slice(0, 3)
+    .map((line) => Text({ dimColor: true, children: line }))
+}
+
+function entryBoxOf(ui: Ui, entry: Entry, index: number, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
   const { Box, Button, Text } = ui
+  const key = entryKeyOf(entry)
+  const isQuoted = state.quoted.has(key)
+  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
+  const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${isQuoted ? ' (quoted)' : ''}`
+  // A hotkey presses from the `AbovePrompt` band per the d.ts; whether a Pane's own Buttons
+  // honour it has not been measured in a real terminal (see report.md).
+  const hotkey = index < 9 ? String(index + 1) : undefined
+
   return Box({
-    key: 'probe',
+    key,
     flexDirection: 'column',
-    paddingTop: 1,
-    paddingRight: 1,
     children: [
-      Text({ children: 'press the button; watch this pane and the prompt box' }),
       Button({
-        key: 'probe-button',
-        label: 'fill the prompt box',
+        key: `${key}:button`,
+        label,
+        ...(hotkey ? { hotkey } : {}),
         onPress: () => {
-          void host.fill(PROBE_TEXT).then(({ isFilled }) => {
-            host.log(`pull-request-pane probe: fill isFilled=${isFilled}`)
+          const text = fillTextOf(entry, repo ?? '')
+          void host.fill(text).then(({ isFilled }) => {
+            if (!isFilled) host.log(`pull-request-pane: could not fill the prompt box for ${key}`)
+            state.quoted.add(key)
             host.invalidate()
           })
         },
       }),
+      ...descriptionLinesOf(ui, entry.body),
     ],
   })
 }
 
+function paneOf(ui: Ui, state: State, host: Host, titleMaxChars: number): RenderElement {
+  const { Box, Text } = ui
+  const rows: RenderElement[] =
+    state.error !== null
+      ? [Text({ color: 'red', children: state.error })]
+      : state.entries.map((entry, index) => entryBoxOf(ui, entry, index, state, host, state.repo, titleMaxChars))
+
+  const footer = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
+
+  return Box({
+    key: 'pull-request-pane',
+    flexDirection: 'column',
+    paddingTop: 1,
+    paddingRight: 1,
+    children: [Box({ flexDirection: 'column', children: rows }), Box({ marginTop: 1, children: [Text({ dimColor: true, children: footer })] })],
+  })
+}
+
 export function register(on: On) {
-  let host: Host | null = null
-  let isOpen = false
+  const state: State = {
+    host: null,
+    isOpen: false,
+    repo: null,
+    entries: [],
+    error: null,
+    refreshedAt: null,
+    isRefreshing: false,
+    isQueued: false,
+    quoted: new Set(),
+  }
 
   on('session.start', async ($, e, next) => {
-    host = hostOf($)
-    await host.register().catch((error: unknown) => {
-      host?.log(`pull-request-pane probe: /${COMMAND} is not available: ${error instanceof Error ? error.message : String(error)}`)
+    state.host = hostOf($)
+    await state.host.register().catch((error: unknown) => {
+      state.host?.log(`pull-request-pane: /${COMMAND} is not available: ${messageOf(error)}`)
     })
     return next(e)
   })
 
   on('command.run', { command: COMMAND }, async ($, e, next) => {
+    const host = state.host
     if (host === null) return next(e)
-    if (isOpen) {
+
+    if (state.isOpen) {
       await host.close()
-      isOpen = false
-      return { text: 'probe pane hidden' }
+      state.isOpen = false
+      return { text: 'pull-request-pane hidden' }
     }
+
+    const cwd = await host.cwd()
+    const branch = await branchOf(host, cwd)
+    if (branch === null) return { text: NOT_IN_REPOSITORY_TEXT }
+
     await host.open()
-    isOpen = true
-    return { text: 'probe pane shown' }
+    state.isOpen = true
+    await refresh(state)
+    return { text: 'pull-request-pane shown' }
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PANE_ID || host === null) return next(e)
+    if (e.requestId !== PANE_ID || state.host === null) return next(e)
     const { Box, Button, Text } = await $.ui.resolve(e)
-    return paneOf({ Box, Button, Text }, host)
+    const titleMaxChars = Math.max(10, (e.props.bodyColumns ?? DEFAULT_TITLE_MAX_CHARS + TITLE_PAD_COLUMNS) - TITLE_PAD_COLUMNS)
+    return paneOf({ Box, Button, Text }, state, state.host, titleMaxChars)
   })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     const result = await next(e)
-    if (result.deny === undefined) isOpen = false
+    if (result.deny === undefined) state.isOpen = false
     return result
+  })
+
+  on('turn.complete', ($, e, next) => {
+    if (state.isOpen) void refresh(state).catch(() => undefined)
+    return next(e)
+  })
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    try {
+      return await next(e)
+    } finally {
+      if (state.isOpen && typeof e.command === 'string' && e.command.includes('gh ')) void refresh(state).catch(() => undefined)
+    }
   })
 }

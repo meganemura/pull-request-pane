@@ -60,14 +60,22 @@ type PrStatus = {
   mergeable: string
   reviewDecision: string
   checks: { pass: number; fail: number; pending: number; skipped: number }
+  checkItems: CheckItem[]
   fetchedAt: string
 }
 
+type CheckOutcome = 'pass' | 'fail' | 'pending' | 'skipped'
+
+// One check by name, for the expanded list — gh's rollup has no stable id to key on, so the
+// name (falling back to its position) is what a re-render matches against.
+type CheckItem = { name: string; outcome: CheckOutcome; url?: string }
+
 type GhRecord = { number: number; title: string; body: string; url: string; state: string }
 
-// One `statusCheckRollup` element: a CheckRun (`status`, `conclusion`) or a StatusContext
-// (`state`) — gh's two shapes for one check, told apart by which fields are present.
-type CheckRollupItem = { status?: string; conclusion?: string | null; state?: string }
+// One `statusCheckRollup` element: a CheckRun (`name`, `status`, `conclusion`, `detailsUrl`) or
+// a StatusContext (`context`, `state`, `targetUrl`) — gh's two shapes for one check, told apart
+// by which fields are present.
+type CheckRollupItem = { name?: string; context?: string; status?: string; conclusion?: string | null; state?: string; detailsUrl?: string; targetUrl?: string }
 
 type Host = {
   cwd: () => Promise<string>
@@ -284,24 +292,37 @@ function titleFitOf(title: string, maxChars: number): string {
   return title.length > maxChars ? `${title.slice(0, Math.max(1, maxChars - 1))}…` : title
 }
 
-// The spec's aggregation, item by item: a CheckRun (has `conclusion`) is counted by its
+// The spec's aggregation, item by item: a CheckRun (has `conclusion`) is read by its
 // conclusion, a StatusContext (has `state` and no `conclusion`) by its state; a CheckRun still
 // running (no conclusion yet) and a StatusContext still pending both fall into `pending`.
+function outcomeOf(item: CheckRollupItem): CheckOutcome {
+  const isCheckRun = item.conclusion !== undefined || item.status !== undefined
+  if (isCheckRun) {
+    const conclusion = item.conclusion ?? null
+    if (conclusion === 'SUCCESS') return 'pass'
+    if (conclusion !== null && FAIL_CONCLUSIONS.has(conclusion)) return 'fail'
+    if (conclusion !== null && SKIP_CONCLUSIONS.has(conclusion)) return 'skipped'
+    return 'pending'
+  }
+  if (item.state === 'SUCCESS') return 'pass'
+  if (item.state === 'FAILURE' || item.state === 'ERROR') return 'fail'
+  return 'pending'
+}
+
 function checksOf(items: readonly CheckRollupItem[]): PrStatus['checks'] {
   const checks = { pass: 0, fail: 0, pending: 0, skipped: 0 }
-  for (const item of items) {
-    const isCheckRun = item.conclusion !== undefined || item.status !== undefined
-    if (isCheckRun) {
-      const conclusion = item.conclusion ?? null
-      if (conclusion === 'SUCCESS') checks.pass += 1
-      else if (conclusion !== null && FAIL_CONCLUSIONS.has(conclusion)) checks.fail += 1
-      else if (conclusion !== null && SKIP_CONCLUSIONS.has(conclusion)) checks.skipped += 1
-      else checks.pending += 1
-    } else if (item.state === 'SUCCESS') checks.pass += 1
-    else if (item.state === 'FAILURE' || item.state === 'ERROR') checks.fail += 1
-    else checks.pending += 1
-  }
+  for (const item of items) checks[outcomeOf(item)] += 1
   return checks
+}
+
+// A CheckRun names itself `name`; a StatusContext, the older commit-status shape, names itself
+// `context`. Neither is guaranteed present (gh's schema marks both nullable), so a position
+// falls back for the rare rollup entry with no name of its own.
+function checkItemsOf(items: readonly CheckRollupItem[]): CheckItem[] {
+  return items.map((item, index) => {
+    const url = item.detailsUrl ?? item.targetUrl
+    return { name: item.name ?? item.context ?? `check ${index + 1}`, outcome: outcomeOf(item), ...(url === undefined ? {} : { url }) }
+  })
 }
 
 type GhPrStatusRecord = { isDraft: boolean; mergeable: string; reviewDecision: string; statusCheckRollup: CheckRollupItem[] }
@@ -314,11 +335,13 @@ async function fetchStatusOf(host: Host, cwd: string, number: number): Promise<P
     )
     if (exitCode !== 0) return null
     const parsed = JSON.parse(stdout) as GhPrStatusRecord
+    const items = parsed.statusCheckRollup ?? []
     return {
       isDraft: parsed.isDraft,
       mergeable: parsed.mergeable,
       reviewDecision: parsed.reviewDecision,
-      checks: checksOf(parsed.statusCheckRollup ?? []),
+      checks: checksOf(items),
+      checkItems: checkItemsOf(items),
       fetchedAt: new Date().toLocaleTimeString(),
     }
   } catch {
@@ -392,8 +415,9 @@ async function refresh(state: State): Promise<void> {
 
 // The real element types, so the typecheck refuses a prop the engine would refuse. `Text`
 // takes no `key`: giving it one drops the whole tree (measured, see the probe this file
-// replaced), so only `Box` and `Button` below ever carry one.
-type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text'>
+// replaced), so only `Box` and `Button` below ever carry one. `Link` takes no `key` either
+// (not in its props), so it is never a direct array child — always inside a keyed `Box`.
+type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link'>
 
 function descriptionLinesOf(ui: Ui, body: string): RenderElement[] {
   const { Text } = ui
@@ -417,11 +441,14 @@ function statusColorOf(checks: PrStatus['checks']): string | undefined {
   return undefined
 }
 
-function statusLineOf(ui: Ui, status: PrStatus): RenderElement {
+// The summary line, once expanded: counts, review decision, mergeable state. Left uncoloured
+// (dim, like the description) — a single colour for the whole line said "everything here is
+// this one status", which was wrong the moment more than one check disagreed with the rest;
+// each check's own colour lives on its own row below instead.
+function summaryLineOf(ui: Ui, status: PrStatus): RenderElement {
   const { Text } = ui
   const segments = [checksSegmentOf(status.checks), status.reviewDecision, status.mergeable].filter((segment) => segment !== '')
-  const color = statusColorOf(status.checks)
-  return Text({ ...(color === undefined ? {} : { color }), children: segments.join(' · ') })
+  return Text({ dimColor: true, children: segments.join(' · ') })
 }
 
 function statusWordOf(checks: PrStatus['checks']): string {
@@ -431,9 +458,35 @@ function statusWordOf(checks: PrStatus['checks']): string {
   return 'no checks'
 }
 
+function outcomeSymbolOf(outcome: CheckOutcome): string {
+  if (outcome === 'pass') return '✓'
+  if (outcome === 'fail') return '✗'
+  if (outcome === 'skipped') return '⏭'
+  return '…'
+}
+
+function outcomeColorOf(outcome: CheckOutcome): string | undefined {
+  if (outcome === 'pass') return 'green'
+  if (outcome === 'fail') return 'red'
+  if (outcome === 'pending') return 'yellow'
+  return undefined
+}
+
+// One row per check, each carrying its own outcome's colour rather than the whole section
+// sharing one. Wrapped in a `Link` to the check's own run when gh gave one (a CheckRun's
+// `detailsUrl`, a StatusContext's `targetUrl`); plain text otherwise.
+function checkItemLineOf(ui: Ui, key: string, item: CheckItem): RenderElement {
+  const { Box, Link, Text } = ui
+  const color = outcomeColorOf(item.outcome)
+  const label = Text({ ...(color === undefined ? {} : { color }), children: `${outcomeSymbolOf(item.outcome)} ${item.name}` })
+  const content = item.url === undefined ? label : Link({ href: item.url, children: [label] })
+  return Box({ key, children: [content] })
+}
+
 // Collapsed by default: one word (coloured, so red/yellow/green reads before the word does)
-// answers "is anything failing, still running, or all clear" without reading numbers. The
-// counts, review decision and mergeable state are one press away, not gone.
+// answers "is anything failing, still running, or all clear" without reading numbers. Expanded,
+// each check draws its own name and outcome — pressing the toggle was the point of asking for
+// them, so the names are what expanding buys, not just the same summary spelled out.
 function checksSectionOf(ui: Ui, key: string, status: PrStatus, state: State, host: Host): RenderElement[] {
   const { Box, Button, Text } = ui
   const isExpanded = state.expandedStatus.has(key)
@@ -458,7 +511,13 @@ function checksSectionOf(ui: Ui, key: string, status: PrStatus, state: State, ho
     ],
   })
 
-  return isExpanded ? [toggleRow, statusLineOf(ui, status)] : [toggleRow]
+  if (!isExpanded) return [toggleRow]
+
+  return [
+    toggleRow,
+    summaryLineOf(ui, status),
+    ...status.checkItems.map((item, index) => checkItemLineOf(ui, `${key}:check:${index}`, item)),
+  ]
 }
 
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
@@ -558,9 +617,9 @@ export function register(on: On) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID || state.host === null) return next(e)
-    const { Box, Button, Text } = await $.ui.resolve(e)
+    const { Box, Button, Text, Link } = await $.ui.resolve(e)
     const titleMaxChars = Math.max(10, (e.props.bodyColumns ?? DEFAULT_TITLE_MAX_CHARS + TITLE_PAD_COLUMNS) - TITLE_PAD_COLUMNS)
-    return paneOf({ Box, Button, Text }, state, state.host, titleMaxChars)
+    return paneOf({ Box, Button, Text, Link }, state, state.host, titleMaxChars)
   })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {

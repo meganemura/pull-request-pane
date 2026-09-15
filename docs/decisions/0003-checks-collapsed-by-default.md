@@ -2,6 +2,16 @@
 
 - Status: accepted
 - Date: 2026-09-16
+- Revised: 2026-09-16 (the same day, after a real-terminal look at the shipped version) — the
+  expanded view no longer shows one status line coloured by the worst outcome across every
+  check. The lead's own read: "✓1 ✗1 …1 · MERGEABLE" drawn entirely in red misrepresented the
+  one check that had actually passed, and having pressed the toggle at all, each check's own
+  name was worth showing, not just the aggregate spelled out. Expanded now draws the summary
+  line uncoloured (dim, like the description) and one row per check — its own symbol, colour,
+  and name — each wrapped in a `Link` to its run (`gh`'s `detailsUrl`/`targetUrl`) where one
+  exists, so a click reaches GitHub Actions, CircleCI, or whatever produced it. The Decision and
+  Consequences sections below are updated in place; the collapsed word and its colour priority
+  are unchanged by this revision.
 
 ## Context
 
@@ -18,10 +28,14 @@ glance — a color and a word answer "is it okay" on their own.
 
 - The checks row collapses to a `▶ checks` toggle Button plus one coloured word — `failing`
   (red), `running` (yellow), `passing` (green), or `no checks` (no colour) — matching the same
-  red-beats-yellow-beats-green priority the full status line already used. A press expands it
-  to `▼ checks` and the full line (`✓<pass> ✗<fail> …<pending> · <review decision> ·
-  <mergeable>`) underneath; a second press collapses it again. Collapsed is the default: the
-  question "should I look here" is answered before the question "what exactly is wrong".
+  red-beats-yellow-beats-green priority the full status line already used. Collapsed is the
+  default: the question "should I look here" is answered before the question "what exactly is
+  wrong".
+- A press expands it to `▼ checks`, an uncoloured summary line (`✓<pass> ✗<fail> …<pending> ·
+  <review decision> · <mergeable>`), then one row per check: its own symbol and colour (`✓`
+  green, `✗` red, `…` yellow, `⏭` uncoloured), its name (gh's `name` for a CheckRun, `context`
+  for the older StatusContext shape, a position when neither is given), and a `Link` to its run
+  when gh gave a URL. A second press collapses it again.
 - The description is drawn in full, with no line cap. It sits below the checks row (or
   directly below the title when there is no status yet), so the order is always title, checks,
   description — the shape the person asked for.

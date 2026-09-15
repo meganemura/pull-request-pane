@@ -137,6 +137,35 @@ function textOf(tree: unknown): string {
   return textOf(children)
 }
 
+// Every Text node in a drawn tree, each with the colour it set (absent when it set none).
+function coloredLinesOf(tree: unknown): { text: string; color?: string }[] {
+  if (Array.isArray(tree)) return tree.flatMap(coloredLinesOf)
+  if (typeof tree !== 'object' || tree === null) return []
+  const type: unknown = Reflect.get(tree, 'type')
+  const props: unknown = Reflect.get(tree, 'props')
+  const children: unknown = Reflect.get(tree, 'children')
+  if (type === 'Text') {
+    const text = (Array.isArray(children) ? children : []).filter((child): child is string => typeof child === 'string').join('')
+    const color = typeof props === 'object' && props ? Reflect.get(props, 'color') : undefined
+    return [{ text, ...(typeof color === 'string' ? { color } : {}) }]
+  }
+  return coloredLinesOf(children)
+}
+
+// Every Link in a drawn tree: where it goes, and the text inside it.
+function linksOf(tree: unknown): { href: string; text: string }[] {
+  if (Array.isArray(tree)) return tree.flatMap(linksOf)
+  if (typeof tree !== 'object' || tree === null) return []
+  const type: unknown = Reflect.get(tree, 'type')
+  const props: unknown = Reflect.get(tree, 'props')
+  const children: unknown = Reflect.get(tree, 'children')
+  if (type === 'Link') {
+    const href = typeof props === 'object' && props ? Reflect.get(props, 'href') : undefined
+    return [{ href: typeof href === 'string' ? href : '', text: textOf(children) }]
+  }
+  return linksOf(children)
+}
+
 // A Button's `onPress` is not awaited by `$.ui.press`; it finishes after a few turns of the
 // task queue. `setTimeout` is reached through the global object, as the module names no host
 // globals of its own.
@@ -260,12 +289,12 @@ describe('mod', () => {
           mergeable: 'MERGEABLE',
           reviewDecision: 'APPROVED',
           statusCheckRollup: [
-            { status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { status: 'COMPLETED', conclusion: 'SUCCESS' },
-            { status: 'COMPLETED', conclusion: 'FAILURE' },
-            { status: 'IN_PROGRESS', conclusion: null },
-            { status: 'IN_PROGRESS', conclusion: null },
+            { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'unit', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/acme/app/actions/runs/1/job/2' },
+            { name: 'e2e', status: 'IN_PROGRESS', conclusion: null },
+            { name: 'docs', status: 'IN_PROGRESS', conclusion: null },
           ],
         },
       },
@@ -291,6 +320,43 @@ describe('mod', () => {
     const expanded = textOf(await $.ui.render(PANE))
     expect(expanded).toContain('▼ checks')
     expect(expanded).toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
+    expect(expanded).toContain('✗ deploy-check')
+    expect(expanded).toContain('✓ lint')
+    expect(expanded).toContain('… e2e')
+  })
+
+  test('each check keeps its own colour; the summary line and the failing check do not share one', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      statuses: {
+        42: {
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: 'APPROVED',
+          statusCheckRollup: [
+            { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'deploy-check', status: 'COMPLETED', conclusion: 'FAILURE', detailsUrl: 'https://github.com/acme/app/actions/runs/1/job/2' },
+          ],
+        },
+      },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await kept.clock.advance(POLL_MS)
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:checks-toggle:button' })
+
+    const tree = await $.ui.render(PANE)
+    const lines = coloredLinesOf(tree)
+
+    expect(lines.find((line) => line.text.includes('MERGEABLE'))).toEqual({ text: expect.stringContaining('MERGEABLE') })
+    expect(lines.find((line) => line.text === '✓ lint')).toEqual({ text: '✓ lint', color: 'green' })
+    expect(lines.find((line) => line.text === '✗ deploy-check')).toEqual({ text: '✗ deploy-check', color: 'red' })
+
+    const links = linksOf(tree)
+    expect(links).toEqual([{ href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗ deploy-check' }])
   })
 
   test('closing the pane stops the poll', async ($, on) => {

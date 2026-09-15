@@ -472,13 +472,22 @@ function outcomeColorOf(outcome: CheckOutcome): string | undefined {
   return undefined
 }
 
+// A cyan neither outcome colour uses, so hovering a link reads as "this is clickable" and not
+// as the check's state changing under the pointer.
+const LINK_HOVER_COLOR = 'cyan'
+
 // One row per check, each carrying its own outcome's colour rather than the whole section
 // sharing one. Wrapped in a `Link` to the check's own run when gh gave one (a CheckRun's
-// `detailsUrl`, a StatusContext's `targetUrl`); plain text otherwise.
+// `detailsUrl`, a StatusContext's `targetUrl`); plain text otherwise. The hover colour needs the
+// enclosing `Box` to be keyed (the d.ts refuses it outside one), which this row's `Box` already is.
 function checkItemLineOf(ui: Ui, key: string, item: CheckItem): RenderElement {
   const { Box, Link, Text } = ui
   const color = outcomeColorOf(item.outcome)
-  const label = Text({ ...(color === undefined ? {} : { color }), children: `${outcomeSymbolOf(item.outcome)} ${item.name}` })
+  const label = Text({
+    ...(color === undefined ? {} : { color }),
+    ...(item.url === undefined ? {} : { hover: { color: LINK_HOVER_COLOR } }),
+    children: `${outcomeSymbolOf(item.outcome)} ${item.name}`,
+  })
   const content = item.url === undefined ? label : Link({ href: item.url, children: [label] })
   return Box({ key, children: [content] })
 }

@@ -43,7 +43,8 @@ While the pane is open, each pull request's status refreshes every 60 seconds. I
 (green), or `no checks` — so you can tell at a glance whether to look further. Press the
 toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <review decision> ·
 <mergeable>`), then each check by name, coloured by its own outcome and linked to its run
-(GitHub Actions, CircleCI, whatever produced it) where one exists. Issues have no status.
+(GitHub Actions, CircleCI, whatever produced it) where one exists — hover a linked check and it
+highlights, so it reads as clickable. Issues have no status.
 
 Each entry's description is drawn in full below its title and status, not cut to a few lines.
 

@@ -137,8 +137,9 @@ function textOf(tree: unknown): string {
   return textOf(children)
 }
 
-// Every Text node in a drawn tree, each with the colour it set (absent when it set none).
-function coloredLinesOf(tree: unknown): { text: string; color?: string }[] {
+// Every Text node in a drawn tree, each with the colour it set (absent when it set none) and
+// its hover colour (absent the same way).
+function coloredLinesOf(tree: unknown): { text: string; color?: string; hoverColor?: string }[] {
   if (Array.isArray(tree)) return tree.flatMap(coloredLinesOf)
   if (typeof tree !== 'object' || tree === null) return []
   const type: unknown = Reflect.get(tree, 'type')
@@ -147,7 +148,10 @@ function coloredLinesOf(tree: unknown): { text: string; color?: string }[] {
   if (type === 'Text') {
     const text = (Array.isArray(children) ? children : []).filter((child): child is string => typeof child === 'string').join('')
     const color = typeof props === 'object' && props ? Reflect.get(props, 'color') : undefined
-    return [{ text, ...(typeof color === 'string' ? { color } : {}) }]
+    // `hover` sits beside `props`, not inside it (measured: dumped a tree and read the shape).
+    const hover = Reflect.get(tree, 'hover')
+    const hoverColor = typeof hover === 'object' && hover ? Reflect.get(hover, 'color') : undefined
+    return [{ text, ...(typeof color === 'string' ? { color } : {}), ...(typeof hoverColor === 'string' ? { hoverColor } : {}) }]
   }
   return coloredLinesOf(children)
 }
@@ -353,7 +357,7 @@ describe('mod', () => {
 
     expect(lines.find((line) => line.text.includes('MERGEABLE'))).toEqual({ text: expect.stringContaining('MERGEABLE') })
     expect(lines.find((line) => line.text === '✓ lint')).toEqual({ text: '✓ lint', color: 'green' })
-    expect(lines.find((line) => line.text === '✗ deploy-check')).toEqual({ text: '✗ deploy-check', color: 'red' })
+    expect(lines.find((line) => line.text === '✗ deploy-check')).toEqual({ text: '✗ deploy-check', color: 'red', hoverColor: 'cyan' })
 
     const links = linksOf(tree)
     expect(links).toEqual([{ href: 'https://github.com/acme/app/actions/runs/1/job/2', text: '✗ deploy-check' }])

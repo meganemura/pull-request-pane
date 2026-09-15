@@ -10,17 +10,16 @@ GitHub pull requests that relate to the current session: the pull request of
 the checked-out branch first, then the issues it closes and the pull
 requests and issues the transcript mentions. The pane has two functions:
 
-1. **Description or title attach.** Each entry has a button. A press arms
-   that entry's whole description to ride the person's next prompt as
-   context (never the prompt box itself), so the person types one
-   instruction and Claude edits the description on GitHub. A drag over the
-   title or the description arms just the selected substring of that field
-   instead, through a `Client` surface module
+1. **Description or title attach.** A drag over an entry's title or
+   description arms the selected substring (dragging over all of it arms the
+   whole field the same way) to ride the person's next prompt as context
+   (never the prompt box itself), through a `Client` surface module
    (`plugin/hooks/description-selection.ts`, reused for both fields — see
-   `docs/decisions/0006`). An entry with something armed freezes its own
-   title and body against the next re-collection, so an offset never points
-   at text that has since changed; its checks keep polling live regardless
-   — they never touch the text an offset points into.
+   `docs/decisions/0006` and `0007`; there is no button). An entry with
+   something armed freezes its own title and body against the next
+   re-collection, so an offset never points at text that has since changed;
+   its checks keep polling live regardless — they never touch the text an
+   offset points into.
 2. **Status.** While the pane is open, the module polls `gh` for each pull
    request's checks, review decision and mergeability, and draws the result
    beside the entry.
@@ -56,8 +55,11 @@ Simplified Technical English.
   with `Elements['terminal']` so the compiler catches it.
 - Tests are `plugin/tests/*.test.ts`, run with
   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugin`. They stub
-  `process.run` (so no test calls the real `gh`), `ui.status`, `prompt.submit`
-  and the clock (`mock.clock`).
+  `process.run` (so no test calls the real `gh`), `ui.status`, `store.get`/
+  `store.set` and the clock (`mock.clock`). Arming has no engine-level test
+  path (no button, and `ui.message` is not callable from a test — see the
+  `Client` note below); it is covered as the plain functions it is built
+  from instead.
 - Quality gates: `claude plugin validate plugin`, `npx -p typescript tsc -p
   plugin/hooks`, and the plugin tests. Run all three before a commit.
 - Development loop: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir

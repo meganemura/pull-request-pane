@@ -5,10 +5,10 @@
 // answers from a script keyed on the argument vector, so what is tested is what the module asks
 // `gh` for and what it draws and fills, never what a real `gh` prints.
 
-import type { CommandRunInput, On, PromptSubmitInput, RenderInput, SessionMessage } from 'claude-code'
+import type { CommandRunInput, On, RenderInput, SessionMessage } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import { contextTextOf, nextArmedOf, selectionMessageOf, statusForArmedOf } from '../hooks/mod'
+import { contextTextOf, fittedContextTextOf, nextArmedOf, selectionMessageOf, statusForArmedOf, withArmedPreserved } from '../hooks/mod'
 
 tier('user')
 
@@ -44,13 +44,6 @@ type WorldOptions = {
   // Seeds `$.store` before `session.start` runs, so a test can simulate a hot reload: the
   // module's own in-memory `state` is gone, but this (a real store's persistence) is not.
   store?: Record<string, unknown>
-}
-
-// A prompt as the person submits it from the composer with a plain Enter, carrying the context
-// given, if any — the shape `$.prompt.submit` takes as a test drives it, matching `mods/diff`'s
-// own fixture for the same call.
-function typedPromptOf(text: string, context?: readonly string[]): PromptSubmitInput {
-  return { text, ...(context ? { context } : {}), wait: false, origin: { kind: 'composer' } }
 }
 
 // The world beneath the module: a checkout on `branch` (or none, when `branch` is null), a
@@ -277,98 +270,16 @@ describe('mod', () => {
     expect(clientPropsOf(tree, 'issue:12:title-select')).toEqual({ lines: ['Login is broken'] })
   })
 
-  test('pressing a Button arms the entry; the next prompt submitted carries its description as context, never the box', async ($, on) => {
-    const kept = world(on, {
-      branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-    })
-    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
-
-    await $.session.start(SESSION)
-    await $.command.run(RUN)
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-
-    expect(kept.statuses.at(-1)).toBe('#42 rides your next prompt (press it again to drop it)')
-    expect(textOf(await $.ui.render(PANE))).toContain('(armed)')
-
-    const submitted = await $.prompt.submit(typedPromptOf('tighten the wording'))
-
-    expect(submitted).toMatchObject({
-      text: 'tighten the wording',
-      context: [
-        "The user attached acme/app pull request #42's description from pull-request-pane to " +
-          'this prompt. Edit it on GitHub with `gh pr edit 42 --body`:\n> line one\n> line two',
-      ],
-    })
-    expect(kept.statuses.at(-1)).toBeUndefined()
-    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
-  })
-
-  test('pressing an armed entry again drops it before any prompt carries it', async ($, on) => {
-    const kept = world(on, {
-      branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-    })
-    const reached: (readonly string[] | undefined)[] = []
-    on('prompt.submit', ($, e) => {
-      reached.push(e.context)
-      return { text: e.text }
-    })
-
-    await $.session.start(SESSION)
-    await $.command.run(RUN)
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-    // A redraw between the two presses, exactly as `host.invalidate()` causes in a real
-    // terminal: `$.ui.press` acts on the tree from the last `ui.render`, so its onPress
-    // closures are stale until this call picks up the pane's new armed state.
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-
-    expect(kept.statuses.at(-1)).toBeUndefined()
-    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
-
-    await $.prompt.submit(typedPromptOf('unrelated'))
-
-    expect(reached).toEqual([undefined])
-  })
-
-  test('an armed description with no room in the context is dropped, not truncated silently', async ($, on) => {
-    const kept = world(on, {
-      branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-    })
-    const full = 'x'.repeat(32_000)
-    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
-
-    await $.session.start(SESSION)
-    await $.command.run(RUN)
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-
-    await $.prompt.submit(typedPromptOf('why?', [full]))
-
-    expect(kept.statuses.at(-1)).toBe("#42's description did not fit in the prompt and was dropped")
-    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
-  })
-
-  // `claude plugin test`'s kit has no call for `ui.message` (checked: it is not in
-  // EventCalls['ui'], only `render`, `resolve`, `scroll` and `focus` are — a Client's post
-  // reaches the hooks module only through the real engine, never through a test's `$`). What
-  // the `on('ui.message', ...)` hook in mod.ts does with a post is covered here as the plain
-  // functions it is built from instead: `selectionMessageOf` validates the untrusted `data`,
-  // `nextArmedOf` decides what a validated message does to what is armed, and
-  // `statusForArmedOf`/`contextTextOf` cover the two wordings a whole-entry arm and a
-  // range arm produce. The hook itself is the thin, unavoidably untested wiring between them
-  // and `state`/`host` — see docs/decisions/0004's revision for this note in full.
+  // There is no button to press any more (docs/decisions/0007): every arm is a drag over a
+  // title or description Client, and `claude plugin test`'s kit has no call for `ui.message`
+  // (checked: not in EventCalls['ui'], only `render`, `resolve`, `scroll` and `focus` are — a
+  // Client's post reaches the hooks module only through the real engine). So the whole arming
+  // path — `selectionMessageOf` validating a post, `nextArmedOf` deciding what it does to what
+  // is armed, `withArmedPreserved` and `pollStatuses` around a refresh, `contextTextOf` and
+  // `fittedContextTextOf` building and fitting what rides the prompt — is covered here as the
+  // plain functions it is built from, not end to end; `on('ui.message', ...)` and
+  // `on('prompt.submit', ...)` in mod.ts are the thin, unavoidably untested wiring between them
+  // and `state`/`host`.
   describe('description-selection message handling', () => {
     test('selectionMessageOf accepts a valid selected or cleared message, rejects the rest', () => {
       expect(selectionMessageOf({ type: 'selected', start: 0, end: 5 })).toEqual({ type: 'selected', start: 0, end: 5 })
@@ -401,31 +312,61 @@ describe('mod', () => {
       expect(nextArmedOf(null, entryA, 'description', { type: 'cleared' })).toBeNull()
     })
 
-    test('statusForArmedOf names the field for a range arm, and says how each kind is dropped', () => {
+    test('statusForArmedOf names the field being armed', () => {
       const entry = { kind: 'pr' as const, number: 42, title: '', body: '', url: '', state: 'OPEN' }
 
-      expect(statusForArmedOf({ entry, field: 'description' })).toBe('#42 rides your next prompt (press it again to drop it)')
       expect(statusForArmedOf({ entry, field: 'description', range: { start: 0, end: 3 } })).toBe(
         "#42's description selection rides your next prompt (click it again to drop it)",
       )
       expect(statusForArmedOf({ entry, field: 'title', range: { start: 0, end: 3 } })).toBe("#42's title selection rides your next prompt (click it again to drop it)")
     })
 
-    test('contextTextOf quotes only the range when one is given, and the title when asked for it', () => {
+    test('contextTextOf quotes only the range, from the title or the description as asked', () => {
       const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }
 
-      expect(contextTextOf(entry, 'acme/app', 'description')).toBe(
-        "The user attached acme/app pull request #42's description from pull-request-pane to this prompt. " +
-          'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one\n> line two',
-      )
       expect(contextTextOf(entry, 'acme/app', 'description', { start: 0, end: 8 })).toBe(
         "The user attached a selection from acme/app pull request #42's description from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one',
       )
-      expect(contextTextOf(entry, 'acme/app', 'title')).toBe(
-        "The user attached acme/app pull request #42's title from pull-request-pane to this prompt. " +
+      expect(contextTextOf(entry, 'acme/app', 'title', { start: 0, end: entry.title.length })).toBe(
+        "The user attached a selection from acme/app pull request #42's title from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --title`:\n> Add login',
       )
+    })
+
+    test('fittedContextTextOf keeps whole lines up to room, cuts with a note, or drops entirely', () => {
+      expect(fittedContextTextOf('short', 100)).toBe('short')
+      // Not even the note fits alongside a first line: dropped entirely, not a note with no body.
+      expect(fittedContextTextOf('a'.repeat(50), 10)).toBeUndefined()
+
+      const cutNote = '(The rest of this description was cut: it did not fit in the prompt.)'
+      // 10 ten-character lines: long enough that the note plus two of them is still less than
+      // the whole text, so the room actually forces a cut instead of fitting everything.
+      const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`.padEnd(10, ' '))
+      const text = lines.join('\n')
+      const room = cutNote.length + 11 + 11 // two 10-character lines, each plus its '\n'
+      expect(fittedContextTextOf(text, room)).toBe(`${lines[0]}\n${lines[1]}\n${cutNote}`)
+    })
+
+    test('withArmedPreserved keeps the armed entry\'s own object, lets every other one refresh', () => {
+      const armedEntry = { kind: 'pr' as const, number: 1, title: 'old title', body: 'old body', url: '', state: 'OPEN' }
+      const otherEntry = { kind: 'pr' as const, number: 2, title: 'other', body: 'other body', url: '', state: 'OPEN' }
+      const state = { armed: { entry: armedEntry, field: 'description' as const, range: { start: 0, end: 3 } }, entries: [armedEntry, otherEntry] }
+
+      const fresh = [
+        { kind: 'pr' as const, number: 1, title: 'NEW title', body: 'NEW body', url: '', state: 'OPEN' },
+        { kind: 'pr' as const, number: 2, title: 'other', body: 'fresher other body', url: '', state: 'OPEN' },
+      ]
+
+      const result = withArmedPreserved(state, fresh)
+
+      expect(result[0]).toBe(armedEntry)
+      expect(result[1]).toBe(fresh[1])
+    })
+
+    test('withArmedPreserved is a no-op when nothing is armed', () => {
+      const entries = [{ kind: 'pr' as const, number: 1, title: 't', body: 'b', url: '', state: 'OPEN' }]
+      expect(withArmedPreserved({ armed: null, entries: [] }, entries)).toBe(entries)
     })
   })
 
@@ -570,49 +511,4 @@ describe('mod', () => {
     expect(text).toContain('#42')
   })
 
-  test('an armed entry keeps its own text through a refresh, even if gh now answers differently', async ($, on) => {
-    const options: WorldOptions = {
-      branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'original body', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-    }
-    world(on, options)
-    await $.session.start(SESSION)
-    await $.command.run(RUN)
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-
-    // As if the description changed on GitHub (or gh just answered a fresh fetch) while armed.
-    options.branchPrs = [{ number: 42, title: 'Add login', body: 'a different body entirely', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }]
-    await $.command.run(RUN)
-    await $.command.run(RUN)
-
-    const props = clientPropsOf(await $.ui.render(PANE), 'pr:42:body-select')
-    expect(props).toEqual({ lines: ['original body'] })
-  })
-
-  test('the status poll keeps updating an armed entry, without disarming it', async ($, on) => {
-    const kept = world(on, {
-      branch: 'feature',
-      repo: 'acme/app',
-      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-      statuses: { 42: { isDraft: false, mergeable: 'MERGEABLE', reviewDecision: '', statusCheckRollup: [] } },
-    })
-    await $.session.start(SESSION)
-    await $.command.run(RUN)
-    await settle()
-    await $.ui.render(PANE)
-    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
-    await settle()
-
-    const before = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
-    await kept.clock.advance(POLL_MS)
-    const after = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
-
-    // The poll still asked (status has nothing to do with the text an offset points into)...
-    expect(after).toBe(before + 1)
-    // ...and the arm itself is untouched by it.
-    expect(textOf(await $.ui.render(PANE))).toContain('(armed)')
-  })
 })

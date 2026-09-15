@@ -1,11 +1,12 @@
 // The plugin's one function-hooks module (the validator admits one per plugin). `/pull-
 // request-pane` opens a pane beside the transcript with the pull requests and issues related
 // to this session: the checked-out branch's pull request first, then the issues its body
-// closes, then anything the transcript names. A press on an entry's Button arms its
-// description to ride the person's next prompt as context: it never touches the prompt box, so
-// nothing already typed there is lost. The person types one instruction and presses Enter;
-// Claude reads the description beside it and edits it on GitHub through `gh pr edit` / `gh
-// issue edit`. A second press on the same entry drops it before it rides anywhere.
+// closes, then anything the transcript names. A drag over an entry's title or description arms
+// the covered text to ride the person's next prompt as context: it never touches the prompt
+// box, so nothing already typed there is lost. The person types one instruction and presses
+// Enter; Claude reads the text beside it and edits it on GitHub through `gh pr edit` / `gh
+// issue edit`. Clicking the highlighted text again, with no drag, drops it before it rides
+// anywhere.
 //
 // While the pane is open, a 60-second timer refetches each pull request's checks, review
 // decision and mergeability and draws them beside the entry; the timer starts when the pane
@@ -97,11 +98,11 @@ type Host = {
   storeSet: (key: string, value: unknown) => Promise<void>
 }
 
-// A whole entry's description (the Button's arm, `field` always `'description'`, `range`
-// absent) or a character range into its title or its description (a drag over
+// A character range into one entry's title or description (a drag over
 // description-selection.ts's Client, reused for both fields — which one posted is told apart
-// by the `element` key suffix in the `ui.message` hook).
-type Armed = { entry: Entry; field: 'title' | 'description'; range?: { start: number; end: number } }
+// by the `element` key suffix in the `ui.message` hook). There is no whole-entry arm: dragging
+// over all of a field's text is how the whole thing gets armed.
+type Armed = { entry: Entry; field: 'title' | 'description'; range: { start: number; end: number } }
 
 type State = {
   host: Host | null
@@ -189,11 +190,11 @@ function snapshotFromStore(value: unknown): Snapshot | null {
 }
 
 // While an entry has something armed, its title or body must not change under the person: a
-// drag's offsets and a Button's whole-body quote are both computed against one version of that
-// text, and refreshing it mid-interaction — a real edit landing on GitHub, or just a re-fetch
-// of the same content under a new object — would leave an offset pointing at the wrong thing
-// (real-terminal feedback: the automatic refresh should leave an armed entry alone).
-function withArmedPreserved(state: State, freshEntries: Entry[]): Entry[] {
+// drag's offsets are computed against one version of that text, and refreshing it
+// mid-interaction — a real edit landing on GitHub, or just a re-fetch of the same content under
+// a new object — would leave an offset pointing at the wrong thing (real-terminal feedback: the
+// automatic refresh should leave an armed entry alone).
+export function withArmedPreserved(state: Pick<State, 'armed' | 'entries'>, freshEntries: Entry[]): Entry[] {
   if (state.armed === null) return freshEntries
   const armedKey = entryKeyOf(state.armed.entry)
   const previous = state.entries.find((entry) => entryKeyOf(entry) === armedKey)
@@ -228,12 +229,9 @@ export function nextArmedOf(current: Armed | null, entry: Entry, field: 'title' 
   return { entry, field, range: { start: message.start, end: message.end } }
 }
 
-// The status line for a freshly armed entry: the whole-body arm (the Button's) is the only one
-// with no range, so it alone still says "press it again" (the Button); a range arm — from
-// either field's description-selection.ts Client — says "click it again", since that is how it
-// is actually dropped (clicking the highlighted text, not the Button — see docs/decisions/0006).
+// The status line for a freshly armed entry: says which field, and that clicking the
+// highlighted text again (not a button — there is none, see docs/decisions/0007) drops it.
 export function statusForArmedOf(armed: Armed): string {
-  if (armed.range === undefined) return `#${armed.entry.number} rides your next prompt (press it again to drop it)`
   const fieldWord = armed.field === 'title' ? 'title' : 'description'
   return `#${armed.entry.number}'s ${fieldWord} selection rides your next prompt (click it again to drop it)`
 }
@@ -378,13 +376,13 @@ async function collectEntries(host: Host, cwd: string, branch: string): Promise<
 // `mods/diff` uses for its own arm-and-ride ask), then the text quoted line by line (an empty
 // line becomes a bare `>`), cut at 60 lines with a trailing marker. Never shown to the person —
 // see docs/decisions/0004 for why the prompt box itself is never touched.
-export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'description', range?: { start: number; end: number }): string {
+export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'description', range: { start: number; end: number }): string {
   const kindWord = entry.kind === 'pr' ? 'pull request' : 'issue'
   const editNoun = entry.kind === 'pr' ? 'pr' : 'issue'
   const source = field === 'title' ? entry.title : entry.body
-  const body = range === undefined ? source : source.slice(range.start, range.end)
+  const body = source.slice(range.start, range.end)
   const flag = field === 'title' ? '--title' : '--body'
-  const subject = range === undefined ? `${repo} ${kindWord} #${entry.number}'s ${field}` : `a selection from ${repo} ${kindWord} #${entry.number}'s ${field}`
+  const subject = `a selection from ${repo} ${kindWord} #${entry.number}'s ${field}`
   const header = `The user attached ${subject} from pull-request-pane to this prompt. Edit it on GitHub with \`gh ${editNoun} edit ${entry.number} ${flag}\`:`
   const rawLines = body.split('\n')
   const isTruncated = rawLines.length > MAX_BODY_LINES
@@ -397,7 +395,7 @@ export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'desc
 // `mods/diff`'s own fitting: whole when it fits the context room left, else as many whole
 // lines as fit plus a cut note — never a line sliced mid-word. `undefined` when not even the
 // header fits, so the caller can drop the attach instead of sending a note with no body.
-function fittedContextTextOf(text: string, room: number): string | undefined {
+export function fittedContextTextOf(text: string, room: number): string | undefined {
   if (text.length <= room) return text
   const kept: string[] = []
   let used = CONTEXT_CUT_NOTE.length
@@ -569,8 +567,7 @@ function textSelectionOf(ui: Ui, key: string, suffix: string, text: string, arme
   })
 }
 
-// What is armed for one entry's one field, or undefined when nothing (or the other field, or
-// a whole-body Button arm with no range) is.
+// What is armed for one entry's one field, or undefined when nothing (or the other field) is.
 function armedRangeFor(state: State, key: string, field: 'title' | 'description'): { start: number; end: number } | undefined {
   const armed = state.armed
   if (armed === null || entryKeyOf(armed.entry) !== key || armed.field !== field) return undefined
@@ -692,39 +689,23 @@ function checksRowsOf(ui: Ui, key: string, entry: Entry, state: State, host: Hos
   return [ui.Text({ dimColor: true, children: 'fetching checks…' })]
 }
 
-// The title is drawn by its own textSelectionOf row, not the Button's label, so it can be
-// drag-selected the same way the description is (the user asked to be able to edit the title
-// too, not just read it in the label). The Button keeps only what identifies the entry without
-// being text worth quoting on its own: number, kind, GitHub state. Only the whole-body arm (no
-// range) shows a text suffix — a range arm's own highlight in its textSelectionOf row is the
-// only feedback it needs (real-terminal feedback: a text label duplicating a visible highlight
-// was redundant).
+// No button: a press-to-arm-the-whole-thing control was redundant once a drag could already
+// cover all of a field's text, and it needed its own separate "(armed)" label where a range arm
+// already has the highlight itself for feedback (real-terminal feedback: the drag-select design
+// this note superseded, docs/decisions/0007). The identifier line is now plain text — number,
+// kind, GitHub state — with the title and description each their own textSelectionOf row below
+// it, both drag-selectable.
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host): RenderElement {
-  const { Box, Button } = ui
+  const { Box, Text } = ui
   const key = entryKeyOf(entry)
-  const isArmed = state.armed !== null && entryKeyOf(state.armed.entry) === key
-  const armedSuffix = isArmed && state.armed?.range === undefined ? ' (armed)' : ''
   const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
-  const label = `#${entry.number} ${kindWord} ${entry.state}${armedSuffix}`
+  const label = `#${entry.number} ${kindWord} ${entry.state}`
 
   return Box({
     key,
     flexDirection: 'column',
     children: [
-      Button({
-        key: `${key}:button`,
-        label,
-        onPress: () => {
-          if (isArmed) {
-            state.armed = null
-            host.status(undefined)
-          } else {
-            state.armed = { entry, field: 'description' }
-            host.status(statusForArmedOf(state.armed))
-          }
-          host.invalidate()
-        },
-      }),
+      Text({ children: label }),
       textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, armedRangeFor(state, key, 'title')),
       ...checksRowsOf(ui, key, entry, state, host),
       textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, armedRangeFor(state, key, 'description')),

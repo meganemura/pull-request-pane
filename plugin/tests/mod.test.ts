@@ -345,11 +345,11 @@ describe('mod', () => {
 
       expect(contextTextOf(entry, 'meganemura/app', 'description', { start: 0, end: 8 })).toBe(
         "The user attached a selection from meganemura/app pull request #42's description from pull-request-pane to this prompt. " +
-          'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one',
+          'If they ask you to change it, edit it on GitHub with `gh pr edit 42 --body`; if they ask something else about it, answer that instead:\n> line one',
       )
       expect(contextTextOf(entry, 'meganemura/app', 'title', { start: 0, end: entry.title.length })).toBe(
         "The user attached a selection from meganemura/app pull request #42's title from pull-request-pane to this prompt. " +
-          'Edit it on GitHub with `gh pr edit 42 --title`:\n> Add login',
+          'If they ask you to change it, edit it on GitHub with `gh pr edit 42 --title`; if they ask something else about it, answer that instead:\n> Add login',
       )
     })
 

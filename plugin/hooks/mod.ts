@@ -4,9 +4,10 @@
 // closes, then anything the transcript names. A drag over an entry's title or description arms
 // the covered text to ride the person's next prompt as context: it never touches the prompt
 // box, so nothing already typed there is lost. The person types one instruction and presses
-// Enter; Claude reads the text beside it and edits it on GitHub through `gh pr edit` / `gh
-// issue edit`. Clicking the highlighted text again, with no drag, drops it before it rides
-// anywhere.
+// Enter; Claude reads the text beside it and, asked to change it, edits it on GitHub through
+// `gh pr edit` / `gh issue edit` — asked something else, it answers that instead, since
+// attaching a selection is also how someone asks a question about it. Clicking the highlighted
+// text again, with no drag, drops it before it rides anywhere.
 //
 // While the pane is open, a 60-second timer refetches each pull request's checks, review
 // decision and mergeability and draws them beside the entry; the timer starts when the pane
@@ -377,10 +378,12 @@ async function collectEntries(host: Host, cwd: string, branch: string): Promise<
 }
 
 // What an armed entry's title or description reads as once it rides a prompt as context: a
-// sentence telling the model what the person attached and how to act on it (the shape
-// `mods/diff` uses for its own arm-and-ride ask), then the text quoted line by line (an empty
-// line becomes a bare `>`), cut at 60 lines with a trailing marker. Never shown to the person —
-// see docs/decisions/0004 for why the prompt box itself is never touched.
+// sentence telling the model what the person attached, then the text quoted line by line (an
+// empty line becomes a bare `>`), cut at 60 lines with a trailing marker. Never shown to the
+// person — see docs/decisions/0004 for why the prompt box itself is never touched. `gh edit` is
+// named as what to reach for only if the person's own prompt asks for a change — the attach is
+// also how someone asks a question about the selection, and every prompt naming the same `gh
+// edit` command regardless would have told the model to edit GitHub for a question too.
 export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'description', range: { start: number; end: number }): string {
   const kindWord = entry.kind === 'pr' ? 'pull request' : 'issue'
   const editNoun = entry.kind === 'pr' ? 'pr' : 'issue'
@@ -388,7 +391,7 @@ export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'desc
   const body = source.slice(range.start, range.end)
   const flag = field === 'title' ? '--title' : '--body'
   const subject = `a selection from ${repo} ${kindWord} #${entry.number}'s ${field}`
-  const header = `The user attached ${subject} from pull-request-pane to this prompt. Edit it on GitHub with \`gh ${editNoun} edit ${entry.number} ${flag}\`:`
+  const header = `The user attached ${subject} from pull-request-pane to this prompt. If they ask you to change it, edit it on GitHub with \`gh ${editNoun} edit ${entry.number} ${flag}\`; if they ask something else about it, answer that instead:`
   const rawLines = body.split('\n')
   const isTruncated = rawLines.length > MAX_BODY_LINES
   const kept = isTruncated ? rawLines.slice(0, MAX_BODY_LINES) : rawLines

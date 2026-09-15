@@ -45,8 +45,9 @@ prompt — the status line says
 so, and the highlight stays, colored, as the only sign it is armed (dragging over all of a field
 arms the whole thing the same way). Nothing is written into the prompt box — type your
 instruction as you normally would, whatever is already there included, and press Enter. Claude
-reads the attached text beside your prompt and edits it on GitHub with `gh pr edit --body` (the
-description) or `gh pr edit --title` (the title). Click anywhere in that same field again, with
+reads the attached text beside your prompt: ask it to change the text and it edits it on GitHub
+with `gh pr edit --body` (the description) or `gh pr edit --title` (the title); ask it something
+else about the text instead, and it answers that. Click anywhere in that same field again, with
 no drag, to drop it before it rides anywhere — on the highlight or away from it, either drops
 it. Only one selection is armed at a time — arming another replaces it.
 

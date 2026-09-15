@@ -27,11 +27,14 @@ Type `/pull-request-pane` to show or hide the pane.
 ## Quote a description
 
 Each entry shows a button: `#<n> PR <state> <title>` for a pull request, `#<n> Issue <state>
-<title>` for an issue. Press it, or its hotkey (`1` to `9`, the first nine entries), to write
-that pull request's or issue's description into the prompt box as a quote, with an identifier
-line naming the repository, number, title and URL above it. Type one instruction below the
-quote and press Enter; Claude edits the description on GitHub with `gh pr edit --body` or `gh
-issue edit --body`. A pressed entry shows `(quoted)` afterward.
+<title>` for an issue. Press it (click it, or move to it with the arrow keys and press Enter)
+to write that pull request's or issue's description into the prompt box as a quote, with an
+identifier line naming the repository, number, title and URL above it. Type one instruction
+below the quote and press Enter; Claude edits the description on GitHub with `gh pr edit
+--body` or `gh issue edit --body`. A pressed entry shows `(quoted)` afterward.
+
+Pressing an entry replaces the whole prompt box; there is no way to append to what is already
+typed there.
 
 ## Checks, review and mergeability
 

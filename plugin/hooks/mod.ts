@@ -426,15 +426,12 @@ function statusLineOf(ui: Ui, status: PrStatus): RenderElement {
   return Text({ ...(color === undefined ? {} : { color }), children: segments.join(' · ') })
 }
 
-function entryBoxOf(ui: Ui, entry: Entry, index: number, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
+function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
   const { Box, Button, Text } = ui
   const key = entryKeyOf(entry)
   const isQuoted = state.quoted.has(key)
   const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
   const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${isQuoted ? ' (quoted)' : ''}`
-  // A hotkey presses from the `AbovePrompt` band per the d.ts; whether a Pane's own Buttons
-  // honour it has not been measured in a real terminal (see report.md).
-  const hotkey = index < 9 ? String(index + 1) : undefined
 
   return Box({
     key,
@@ -443,7 +440,6 @@ function entryBoxOf(ui: Ui, entry: Entry, index: number, state: State, host: Hos
       Button({
         key: `${key}:button`,
         label,
-        ...(hotkey ? { hotkey } : {}),
         onPress: () => {
           const text = fillTextOf(entry, repo ?? '')
           void host.fill(text).then(({ isFilled }) => {
@@ -464,7 +460,7 @@ function paneOf(ui: Ui, state: State, host: Host, titleMaxChars: number): Render
   const rows: RenderElement[] =
     state.error !== null
       ? [Text({ color: 'red', children: state.error })]
-      : state.entries.map((entry, index) => entryBoxOf(ui, entry, index, state, host, state.repo, titleMaxChars))
+      : state.entries.map((entry) => entryBoxOf(ui, entry, state, host, state.repo, titleMaxChars))
 
   const refreshedLine = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
   const footerLines = [Text({ dimColor: true, children: refreshedLine }), ...(state.statusAt === null ? [] : [Text({ dimColor: true, children: `status ${state.statusAt}` })])]

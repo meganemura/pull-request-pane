@@ -1,5 +1,7 @@
 # pull-request-pane
 
+[![test](https://github.com/meganemura/pull-request-pane/actions/workflows/test.yml/badge.svg)](https://github.com/meganemura/pull-request-pane/actions/workflows/test.yml)
+
 A Claude Code plugin (a Claude Mod) that shows the GitHub pull requests
 related to the current session in a pane beside the transcript.
 

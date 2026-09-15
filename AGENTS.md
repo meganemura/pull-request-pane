@@ -62,6 +62,9 @@ Simplified Technical English.
   from instead.
 - Quality gates: `claude plugin validate plugin`, `npx -p typescript tsc -p
   plugin/hooks`, and the plugin tests. Run all three before a commit.
+  `.github/workflows/test.yml` runs the same three on every push and pull
+  request, against a pinned `claude` CLI and `typescript` version — none of
+  the three calls the model, so the workflow needs no API credential.
 - Development loop: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir
   "$PWD/plugin"` in a repository that has a pull request, in a real terminal.
   `-p` has no pane surface. Hook failures are fail-open and appear only in

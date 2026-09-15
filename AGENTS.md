@@ -10,9 +10,10 @@ GitHub pull requests that relate to the current session: the pull request of
 the checked-out branch first, then the issues it closes and the pull
 requests and issues the transcript mentions. The pane has two functions:
 
-1. **Description quote.** Each entry has a button. A press quotes that
-   entry's description into the prompt box, so the person types one
-   instruction after the quote and Claude edits the description on GitHub.
+1. **Description attach.** Each entry has a button. A press arms that
+   entry's description to ride the person's next prompt as context (never
+   the prompt box itself), so the person types one instruction and Claude
+   edits the description on GitHub.
 2. **Status.** While the pane is open, the module polls `gh` for each pull
    request's checks, review decision and mergeability, and draws the result
    beside the entry.
@@ -48,8 +49,8 @@ Simplified Technical English.
   with `Elements['terminal']` so the compiler catches it.
 - Tests are `plugin/tests/*.test.ts`, run with
   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugin`. They stub
-  `process.run` (so no test calls the real `gh`), `prompt.fill` and the
-  clock (`mock.clock`).
+  `process.run` (so no test calls the real `gh`), `ui.status`, `prompt.submit`
+  and the clock (`mock.clock`).
 - Quality gates: `claude plugin validate plugin`, `npx -p typescript tsc -p
   plugin/hooks`, and the plugin tests. Run all three before a commit.
 - Development loop: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir

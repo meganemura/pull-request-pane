@@ -1,18 +1,19 @@
 // The plugin's one function-hooks module (the validator admits one per plugin). `/pull-
 // request-pane` opens a pane beside the transcript with the pull requests and issues related
 // to this session: the checked-out branch's pull request first, then the issues its body
-// closes, then anything the transcript names. A press on an entry's Button quotes its
-// description into the prompt box, so the person types one instruction and Claude edits the
-// description on GitHub through `gh pr edit` / `gh issue edit`.
+// closes, then anything the transcript names. A press on an entry's Button arms its
+// description to ride the person's next prompt as context: it never touches the prompt box, so
+// nothing already typed there is lost. The person types one instruction and presses Enter;
+// Claude reads the description beside it and edits it on GitHub through `gh pr edit` / `gh
+// issue edit`. A second press on the same entry drops it before it rides anywhere.
 //
 // While the pane is open, a 60-second timer refetches each pull request's checks, review
 // decision and mergeability and draws them beside the entry; the timer starts when the pane
 // opens and stops when it closes.
 //
 // Must NOT know about: how the description gets edited (that is the model's job, driven by
-// the quoted text, never this file's); GitHub authentication (`gh auth status` failing is
-// shown as a line in the pane, not handled); paragraph- or line-level selection (a later
-// milestone).
+// the armed text, never this file's); GitHub authentication (`gh auth status` failing is shown
+// as a line in the pane, not handled); paragraph- or line-level selection (a later milestone).
 //
 // It loads only where Claude Code has function hooks enabled. The engine's validator reads
 // this file statically, so every call on `$` is spelled `$.noun.event(...)` and `$` is handed
@@ -32,6 +33,11 @@ const MAX_BODY_LINES = 60
 const TITLE_PAD_COLUMNS = 12
 const DEFAULT_TITLE_MAX_CHARS = 50
 const POLL_MS = 60_000
+
+// `prompt.submit`'s `context` is capped at this many characters total, across every entry it
+// carries (the d.ts states the cap; matched here rather than discovered by a rejected prompt).
+const PROMPT_CONTEXT_MAX_CHARS = 32_000
+const CONTEXT_CUT_NOTE = '(The rest of this description was cut: it did not fit in the prompt.)'
 
 const NOT_IN_REPOSITORY_TEXT = 'not in a GitHub repository'
 const NO_RELATED_TEXT = 'no related pull request or issue'
@@ -81,7 +87,7 @@ type Host = {
   cwd: () => Promise<string>
   messages: () => Promise<readonly SessionMessage[]>
   run: (argv: readonly string[], cwd: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
-  fill: (text: string) => Promise<{ isFilled: boolean }>
+  status: (text: string | undefined) => void
   every: (ms: number, fn: () => void) => Timer
   open: () => Promise<void>
   close: () => Promise<void>
@@ -99,7 +105,7 @@ type State = {
   refreshedAt: string | null
   isRefreshing: boolean
   isQueued: boolean
-  quoted: Set<string>
+  armed: Entry | null
   expandedStatus: Set<string>
   pollTimer: Timer | null
   isPolling: boolean
@@ -114,7 +120,7 @@ function hostOf($: any): Host {
     cwd: () => $.session.cwd(),
     messages: () => $.session.messages(),
     run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: GH_TIMEOUT_MS }),
-    fill: (text) => $.prompt.fill({ text }),
+    status: (text) => $.ui.status(text),
     every: (ms, fn) => $.clock.every(ms, fn),
     open: () => $.ui.open({ id: PANE_ID, title: PANE_TITLE }),
     close: () => $.ui.close({ id: PANE_ID }),
@@ -272,20 +278,41 @@ async function collectEntries(host: Host, cwd: string, branch: string): Promise<
   return { kind: 'ok', repo, entries }
 }
 
-// The decided fill text: an identifier line naming the repository, kind, number, title and
-// URL, then the body quoted line by line (an empty line becomes a bare `>`), cut at 60 lines
-// with a trailing marker, then one blank line where the cursor lands. English throughout,
-// per the repository's convention for text a person reads — the spec wrote this shape in
-// Japanese prose describing the format, not as the literal string to fill.
-function fillTextOf(entry: Entry, repo: string): string {
-  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
-  const header = `${repo} ${kindWord} #${entry.number} "${entry.title}" (${entry.url}) description:`
+// What an armed entry's description reads as once it rides a prompt as context: a sentence
+// telling the model what the person attached and how to act on it (the shape `mods/diff` uses
+// for its own arm-and-ride ask), then the body quoted line by line (an empty line becomes a
+// bare `>`), cut at 60 lines with a trailing marker. Never shown to the person — see
+// docs/decisions/0004 for why the prompt box itself is never touched.
+function contextTextOf(entry: Entry, repo: string): string {
+  const kindWord = entry.kind === 'pr' ? 'pull request' : 'issue'
+  const editNoun = entry.kind === 'pr' ? 'pr' : 'issue'
+  const header =
+    `The user attached ${repo} ${kindWord} #${entry.number}'s description from ` +
+    `pull-request-pane to this prompt. Edit it on GitHub with \`gh ${editNoun} edit ` +
+    `${entry.number} --body\`:`
   const rawLines = entry.body.split('\n')
   const isTruncated = rawLines.length > MAX_BODY_LINES
   const kept = isTruncated ? rawLines.slice(0, MAX_BODY_LINES) : rawLines
   const quoted = kept.map((line) => (line === '' ? '>' : `> ${line}`))
   if (isTruncated) quoted.push(`> …(truncated, ${rawLines.length - MAX_BODY_LINES} more lines)`)
-  return [header, ...quoted, ''].join('\n')
+  return [header, ...quoted].join('\n')
+}
+
+// `mods/diff`'s own fitting: whole when it fits the context room left, else as many whole
+// lines as fit plus a cut note — never a line sliced mid-word. `undefined` when not even the
+// header fits, so the caller can drop the attach instead of sending a note with no body.
+function fittedContextTextOf(text: string, room: number): string | undefined {
+  if (text.length <= room) return text
+  const kept: string[] = []
+  let used = CONTEXT_CUT_NOTE.length
+  for (const line of text.split('\n')) {
+    const cost = line.length + 1
+    if (used + cost > room) break
+    kept.push(line)
+    used += cost
+  }
+  const hasBody = kept.length > 1
+  return hasBody ? `${kept.join('\n')}\n${CONTEXT_CUT_NOTE}` : undefined
 }
 
 function titleFitOf(title: string, maxChars: number): string {
@@ -540,12 +567,12 @@ function checksRowsOf(ui: Ui, key: string, entry: Entry, state: State, host: Hos
   return [ui.Text({ dimColor: true, children: 'fetching checks…' })]
 }
 
-function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
+function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, titleMaxChars: number): RenderElement {
   const { Box, Button } = ui
   const key = entryKeyOf(entry)
-  const isQuoted = state.quoted.has(key)
+  const isArmed = state.armed !== null && entryKeyOf(state.armed) === key
   const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
-  const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${isQuoted ? ' (quoted)' : ''}`
+  const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${isArmed ? ' (armed)' : ''}`
 
   return Box({
     key,
@@ -555,12 +582,14 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, repo: string
         key: `${key}:button`,
         label,
         onPress: () => {
-          const text = fillTextOf(entry, repo ?? '')
-          void host.fill(text).then(({ isFilled }) => {
-            if (!isFilled) host.log(`pull-request-pane: could not fill the prompt box for ${key}`)
-            state.quoted.add(key)
-            host.invalidate()
-          })
+          if (isArmed) {
+            state.armed = null
+            host.status(undefined)
+          } else {
+            state.armed = entry
+            host.status(`#${entry.number} rides your next prompt (press it again to drop it)`)
+          }
+          host.invalidate()
         },
       }),
       ...checksRowsOf(ui, key, entry, state, host),
@@ -574,7 +603,7 @@ function paneOf(ui: Ui, state: State, host: Host, titleMaxChars: number): Render
   const rows: RenderElement[] =
     state.error !== null
       ? [Text({ color: 'red', children: state.error })]
-      : state.entries.map((entry) => entryBoxOf(ui, entry, state, host, state.repo, titleMaxChars))
+      : state.entries.map((entry) => entryBoxOf(ui, entry, state, host, titleMaxChars))
 
   const refreshedLine = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
   const statusLine = state.isPolling ? 'status updating…' : state.statusAt === null ? null : `status ${state.statusAt}`
@@ -599,12 +628,16 @@ export function register(on: On) {
     refreshedAt: null,
     isRefreshing: false,
     isQueued: false,
-    quoted: new Set(),
+    armed: null,
     expandedStatus: new Set(),
     pollTimer: null,
     isPolling: false,
     statusAt: null,
   }
+
+  // `mods/diff`'s own guard: a second `prompt.submit` arriving while the first one's `next` is
+  // still in flight must not attach the same armed entry twice.
+  let carrying: Entry | null = null
 
   on('session.start', async ($, e, next) => {
     state.host = hostOf($)
@@ -667,6 +700,41 @@ export function register(on: On) {
       return await next(e)
     } finally {
       if (state.isOpen && typeof e.command === 'string' && e.command.includes('gh ')) void refresh(state).catch(() => undefined)
+    }
+  })
+
+  // The armed entry's description rides the next prompt as context, never the prompt box
+  // itself — see docs/decisions/0004. Wired exactly as `mods/diff` wires its own ask: fit the
+  // text to the room the context has left, attach it on the way down, and disarm only once the
+  // prompt actually entered (a drop leaves it armed, so a refused prompt does not silently
+  // spend the one attach the person meant to make).
+  on('prompt.submit', async ($, e, next) => {
+    const host = state.host
+    const asked = state.armed
+    if (host === null || asked === null || carrying === asked) return next(e)
+
+    const context = e.context ?? []
+    const room = PROMPT_CONTEXT_MAX_CHARS - context.reduce((sum, block) => sum + block.length, 0)
+    const text = fittedContextTextOf(contextTextOf(asked, state.repo ?? ''), room)
+
+    if (text === undefined) {
+      state.armed = null
+      host.status(`#${asked.number}'s description did not fit in the prompt and was dropped`)
+      host.invalidate()
+      return next(e)
+    }
+
+    carrying = asked
+    try {
+      const result = await next({ ...e, context: [...context, text] })
+      if (result.drop === undefined && state.armed === asked) {
+        state.armed = null
+        host.status(undefined)
+        host.invalidate()
+      }
+      return result
+    } finally {
+      carrying = null
     }
   })
 }

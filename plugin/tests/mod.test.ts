@@ -5,7 +5,7 @@
 // answers from a script keyed on the argument vector, so what is tested is what the module asks
 // `gh` for and what it draws and fills, never what a real `gh` prints.
 
-import type { CommandRunInput, On, RenderInput, SessionMessage } from 'claude-code'
+import type { CommandRunInput, On, PromptSubmitInput, RenderInput, SessionMessage } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 tier('user')
@@ -39,18 +39,24 @@ type WorldOptions = {
   prs?: Record<number, GhRecord>
   statuses?: Record<number, GhStatusRecord>
   messages?: SessionMessage[]
-  isFilled?: boolean
+}
+
+// A prompt as the person submits it from the composer with a plain Enter, carrying the context
+// given, if any — the shape `$.prompt.submit` takes as a test drives it, matching `mods/diff`'s
+// own fixture for the same call.
+function typedPromptOf(text: string, context?: readonly string[]): PromptSubmitInput {
+  return { text, ...(context ? { context } : {}), wait: false, origin: { kind: 'composer' } }
 }
 
 // The world beneath the module: a checkout on `branch` (or none, when `branch` is null), a
 // `gh` that answers from the fixtures given, and a terminal that keeps what was opened, closed,
-// logged and filled.
+// logged and told as a status line.
 function world(on: On, options: WorldOptions = {}) {
   const runs: (readonly string[])[] = []
   const opened: string[] = []
   const closed: string[] = []
   const logged: string[] = []
-  const filled: string[] = []
+  const statuses: (string | undefined)[] = []
   const clock = mock.clock(on)
 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -112,12 +118,12 @@ function world(on: On, options: WorldOptions = {}) {
     logged.push(e.text)
     return { value: undefined }
   })
-  on('prompt.fill', ($, e) => {
-    filled.push(e.text)
-    return { isFilled: options.isFilled ?? true }
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
   })
 
-  return { runs, opened, closed, logged, filled, clock }
+  return { runs, opened, closed, logged, statuses, clock }
 }
 
 // The strings a drawn tree carries: a Text's joined children, a Button's label.
@@ -236,35 +242,87 @@ describe('mod', () => {
     expect(text).toContain('Login is broken')
   })
 
-  test('pressing a Button fills the prompt box with an identifier line, the quoted body, and a trailing blank line', async ($, on) => {
+  test('pressing a Button arms the entry; the next prompt submitted carries its description as context, never the box', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
       repo: 'acme/app',
       branchPrs: [{ number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
     })
+    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+
     await $.session.start(SESSION)
     await $.command.run(RUN)
     await $.ui.render(PANE)
     await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
     await settle()
 
-    expect(kept.filled).toEqual(['acme/app PR #42 "Add login" (https://github.com/acme/app/pull/42) description:\n> line one\n> line two\n'])
+    expect(kept.statuses.at(-1)).toBe('#42 rides your next prompt (press it again to drop it)')
+    expect(textOf(await $.ui.render(PANE))).toContain('(armed)')
+
+    const submitted = await $.prompt.submit(typedPromptOf('tighten the wording'))
+
+    expect(submitted).toMatchObject({
+      text: 'tighten the wording',
+      context: [
+        "The user attached acme/app pull request #42's description from pull-request-pane to " +
+          'this prompt. Edit it on GitHub with `gh pr edit 42 --body`:\n> line one\n> line two',
+      ],
+    })
+    expect(kept.statuses.at(-1)).toBeUndefined()
+    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
   })
 
-  test('when prompt.fill answers isFilled:false, the press is not silently dropped', async ($, on) => {
+  test('pressing an armed entry again drops it before any prompt carries it', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
       repo: 'acme/app',
       branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
-      isFilled: false,
     })
+    const reached: (readonly string[] | undefined)[] = []
+    on('prompt.submit', ($, e) => {
+      reached.push(e.context)
+      return { text: e.text }
+    })
+
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
+    await settle()
+    // A redraw between the two presses, exactly as `host.invalidate()` causes in a real
+    // terminal: `$.ui.press` acts on the tree from the last `ui.render`, so its onPress
+    // closures are stale until this call picks up the pane's new armed state.
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
+    await settle()
+
+    expect(kept.statuses.at(-1)).toBeUndefined()
+    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
+
+    await $.prompt.submit(typedPromptOf('unrelated'))
+
+    expect(reached).toEqual([undefined])
+  })
+
+  test('an armed description with no room in the context is dropped, not truncated silently', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+    })
+    const full = 'x'.repeat(32_000)
+    on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
+
     await $.session.start(SESSION)
     await $.command.run(RUN)
     await $.ui.render(PANE)
     await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
     await settle()
 
-    expect(kept.logged).toHaveLength(1)
+    await $.prompt.submit(typedPromptOf('why?', [full]))
+
+    expect(kept.statuses.at(-1)).toBe("#42's description did not fit in the prompt and was dropped")
+    expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
   })
 
   test('rendering the pane never spawns', async ($, on) => {

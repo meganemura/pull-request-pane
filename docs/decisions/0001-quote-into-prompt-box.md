@@ -1,6 +1,9 @@
 # 0001. Quote a whole entry, not a selection
 
-- Status: accepted
+- Status: superseded by 0004 for how the text reaches Claude — a press now arms the entry to
+  ride the next prompt as context, never writing into the prompt box. What this note decided —
+  quoting the whole body, not a selection, and the identifier information the text must carry —
+  still stands; only the delivery mechanism changed.
 - Date: 2026-09-15
 
 ## Context

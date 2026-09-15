@@ -3,8 +3,8 @@
 A Claude Code plugin (a Claude Mod) that shows the GitHub pull requests
 related to the current session in a pane beside the transcript.
 
-- Press an entry to quote its description into the prompt box, type what to
-  change, and Claude edits the description on GitHub.
+- Press an entry to arm its description to ride your next prompt, type what
+  to change, and Claude edits the description on GitHub.
 - While the pane is open, each pull request's checks, review decision and
   mergeability refresh on a timer.
 
@@ -24,17 +24,18 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/pull-request-pa
 
 Type `/pull-request-pane` to show or hide the pane.
 
-## Quote a description
+## Attach a description
 
 Each entry shows a button: `#<n> PR <state> <title>` for a pull request, `#<n> Issue <state>
 <title>` for an issue. Press it (click it, or move to it with the arrow keys and press Enter)
-to write that pull request's or issue's description into the prompt box as a quote, with an
-identifier line naming the repository, number, title and URL above it. Type one instruction
-below the quote and press Enter; Claude edits the description on GitHub with `gh pr edit
---body` or `gh issue edit --body`. A pressed entry shows `(quoted)` afterward.
+to arm that pull request's or issue's description to ride your next prompt; the status line
+says so, and the entry gains `(armed)`. Nothing is written into the prompt box — type your
+instruction as you normally would, whatever is already there included, and press Enter. Claude
+reads the description beside your prompt and edits it on GitHub with `gh pr edit --body` or `gh
+issue edit --body`.
 
-Pressing an entry replaces the whole prompt box; there is no way to append to what is already
-typed there.
+Press the same entry again to drop it before it rides anywhere. Only one entry is armed at a
+time; arming a second one replaces the first.
 
 ## Checks, review and mergeability
 

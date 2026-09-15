@@ -592,7 +592,7 @@ describe('mod', () => {
     expect(props).toEqual({ lines: ['original body'] })
   })
 
-  test('the status poll skips the entry currently armed', async ($, on) => {
+  test('the status poll keeps updating an armed entry, without disarming it', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',
       repo: 'acme/app',
@@ -610,6 +610,9 @@ describe('mod', () => {
     await kept.clock.advance(POLL_MS)
     const after = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
 
-    expect(after).toBe(before)
+    // The poll still asked (status has nothing to do with the text an offset points into)...
+    expect(after).toBe(before + 1)
+    // ...and the arm itself is untouched by it.
+    expect(textOf(await $.ui.render(PANE))).toContain('(armed)')
   })
 })

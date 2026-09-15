@@ -41,11 +41,12 @@ status line says so, and the highlight stays, colored, as the only sign it is ar
 highlighted text again (with no drag) to drop it. Editing a title this way rides `gh pr edit
 --title` instead of `--body`. Only one thing is armed at a time across the whole entry — the
 button's whole description, a description selection, or a title selection — arming another
-replaces it, and its own automatic refresh pauses while it stays armed, so what is about to
-ride your prompt does not change out from under you.
+replaces it.
 
-While a pull request is armed (by button or by a drag on either field), it stops updating on
-the 60-second poll and on any other automatic refresh until it is disarmed.
+Its title and description stop refreshing while armed, so what is about to ride your prompt
+does not change out from under you before you press Enter. Checks, review decision and
+mergeability keep updating live on their own 60-second poll regardless — they have nothing to
+do with what is armed.
 
 ## Checks, review and mergeability
 

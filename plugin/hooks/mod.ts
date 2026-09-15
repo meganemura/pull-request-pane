@@ -478,11 +478,11 @@ async function pollStatuses(state: State): Promise<void> {
   host.invalidate()
   try {
     const cwd = await host.cwd()
-    const armedKey = state.armed === null ? null : entryKeyOf(state.armed.entry)
-    // Skips the armed entry (see withArmedPreserved's comment): its checks changing under a
-    // person mid-selection is the same "automatic refresh should leave it alone" complaint,
-    // even though only `status` changes here, not the text an offset points into.
-    const numbers = state.entries.filter((entry) => entry.kind === 'pr' && entryKeyOf(entry) !== armedKey).map((entry) => entry.number)
+    // Not skipped for the armed entry, unlike withArmedPreserved: this only ever replaces
+    // `status`, never `title` or `body`, so it cannot move the text an offset points into —
+    // there is nothing here for arming to protect against (the lead's own correction, having
+    // first paused this too).
+    const numbers = state.entries.filter((entry) => entry.kind === 'pr').map((entry) => entry.number)
     for (const number of numbers) {
       const status = await fetchStatusOf(host, cwd, number)
       if (status === null) continue

@@ -16,7 +16,9 @@ The person tried it and reported seven things:
 5. The `$.ui.status` line ("#3's selection rides your next prompt…") was confusing — its
    purpose was not obvious.
 6. Leaving the pane alone for a while, it drops back to `reading…`.
-7. The automatic refresh of an entry should pause while its text is being selected.
+7. The text an armed selection points into should not change while it is armed — but the
+   status poll (checks, review, mergeability) has nothing to do with that text and should keep
+   updating live regardless.
 
 ## Decision
 
@@ -72,16 +74,16 @@ after a hot reload, the pane's data can go stale until the person's next interac
 re-triggers a `refresh` (`command.run`, `turn.complete`, a `gh` shell command) — a smaller
 problem than `reading…` reappearing over data that already loaded once.
 
-**Pausing auto-refresh while armed (7).** Both of this plugin's automatic triggers — the
-60-second status poll and the `gh`/`turn.complete`-driven `refresh` — now leave the armed
-entry's own text and status alone: `withArmedPreserved` swaps a freshly collected entry back
-for the one already in `state` when its key matches what is armed, and `pollStatuses` skips
-fetching that entry's checks entirely. A drag's offsets, and a Button's whole-body quote, are
-both computed against one specific version of the title or body; refreshing it out from under
-an armed selection — a real edit landing on GitHub, or even just a new fetch of identical
-content under a new object — risked an offset pointing at the wrong text once the person typed
-their instruction. Disarming (a click, a second Button press, or the prompt actually being
-submitted) lifts the pause on the next automatic trigger.
+**Freezing an armed entry's text, not its status (7).** Only `refresh` (the `gh`/`turn.complete`
+-driven re-collection) can move the text an armed offset points into — it can fetch a title or
+body GitHub actually changed. `withArmedPreserved` swaps a freshly collected entry back for the
+one already in `state` when its key matches what is armed, so a drag's offsets and a Button's
+whole-body quote stay valid until the person disarms it. The 60-second status poll only ever
+replaces `status` (checks, review decision, mergeability) — never `title` or `body` — so it
+cannot invalidate an offset either way, and was wrongly paused for the armed entry in an
+earlier revision of this same fix; it now polls every entry exactly as before, armed or not,
+and disarms nothing when it does. Disarming (a click, a second Button press, or the prompt
+actually being submitted) lifts `refresh`'s freeze on the next successful run.
 
 ## Consequences
 

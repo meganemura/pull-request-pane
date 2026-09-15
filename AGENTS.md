@@ -17,8 +17,10 @@ requests and issues the transcript mentions. The pane has two functions:
    title or the description arms just the selected substring of that field
    instead, through a `Client` surface module
    (`plugin/hooks/description-selection.ts`, reused for both fields — see
-   `docs/decisions/0006`). An entry with something armed pauses its own
-   automatic refresh until it is disarmed.
+   `docs/decisions/0006`). An entry with something armed freezes its own
+   title and body against the next re-collection, so an offset never points
+   at text that has since changed; its checks keep polling live regardless
+   — they never touch the text an offset points into.
 2. **Status.** While the pane is open, the module polls `gh` for each pull
    request's checks, review decision and mergeability, and draws the result
    beside the entry.

@@ -20,6 +20,9 @@ export type DescriptionSelectionProps = {
   // Drawn as a persistent highlight while no new drag is in progress, and a click landing
   // inside it, with no movement, is how the person drops it (see onPointerOf's 'up' handling).
   armedRange?: { start: number; end: number }
+  // The hooks module's own decoration (bold, for a title, to set it apart from the body it
+  // sits above) — this file draws it, but never decides it.
+  bold?: boolean
 }
 
 export type Pos = { line: number; col: number }
@@ -171,19 +174,20 @@ function rowSelectionOf(range: OrderedRange, row: VisualRow, lineLength: number)
 // empty row (one a multi-line drag covers in full) still draws as one highlighted space, so a
 // blank line inside a real selection still shows as covered. No `wrap` prop: every row already
 // fits `columns` by construction (visualRowsOf), so there is nothing left to cut or wrap.
-function lineRowOf(elements: ClientElements, key: string, text: string, columns: { start: number; end: number } | null): RenderElement {
+function lineRowOf(elements: ClientElements, key: string, text: string, columns: { start: number; end: number } | null, bold: boolean): RenderElement {
   const { Box, Text } = elements
+  const boldProp = bold ? { bold: true } : {}
   const isFalseBlank = columns !== null && columns.start === columns.end && text !== ''
   if (columns === null || isFalseBlank) {
-    return Box({ key, children: [Text({ children: text === '' ? ' ' : text })] })
+    return Box({ key, children: [Text({ ...boldProp, children: text === '' ? ' ' : text })] })
   }
   const before = text.slice(0, columns.start)
   const selected = text.slice(columns.start, columns.end)
   const after = text.slice(columns.end)
   const children: RenderElement[] = []
-  if (before !== '') children.push(Text({ children: before }))
-  children.push(Text({ inverse: true, children: selected === '' ? ' ' : selected }))
-  if (after !== '') children.push(Text({ children: after }))
+  if (before !== '') children.push(Text({ ...boldProp, children: before }))
+  children.push(Text({ ...boldProp, inverse: true, children: selected === '' ? ' ' : selected }))
+  if (after !== '') children.push(Text({ ...boldProp, children: after }))
   return Box({ key, flexDirection: 'row', children })
 }
 
@@ -242,6 +246,7 @@ export function drawDescriptionSelection(
   const { elements, state, setState, onPointer, post, columns } = surface
   const lines = props.lines
   const armedRange = props.armedRange
+  const bold = props.bold ?? false
   const visualRows = visualRowsOf(lines, columns > 0 ? columns : Number.POSITIVE_INFINITY)
 
   onPointer(onPointerOf(lines, visualRows, state ?? null, armedRange, setState, (data) => post(data)))
@@ -258,7 +263,7 @@ export function drawDescriptionSelection(
     key: 'root',
     flexDirection: 'column',
     children: visualRows.map((row, index) =>
-      lineRowOf(elements, `row:${index}`, row.text, range === null ? null : rowSelectionOf(range, row, lines[row.line]?.length ?? 0)),
+      lineRowOf(elements, `row:${index}`, row.text, range === null ? null : rowSelectionOf(range, row, lines[row.line]?.length ?? 0), bold),
     ),
   })
 }

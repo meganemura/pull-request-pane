@@ -148,9 +148,9 @@ function textOf(tree: unknown): string {
   return textOf(children)
 }
 
-// Every Text node in a drawn tree, each with the colour it set (absent when it set none) and
-// its hover colour (absent the same way).
-function coloredLinesOf(tree: unknown): { text: string; color?: string; hoverColor?: string }[] {
+// Every Text node in a drawn tree, each with the colour it set (absent when it set none), its
+// hover colour (absent the same way), and whether it set `bold`.
+function coloredLinesOf(tree: unknown): { text: string; color?: string; bold?: boolean; hoverColor?: string }[] {
   if (Array.isArray(tree)) return tree.flatMap(coloredLinesOf)
   if (typeof tree !== 'object' || tree === null) return []
   const type: unknown = Reflect.get(tree, 'type')
@@ -159,10 +159,18 @@ function coloredLinesOf(tree: unknown): { text: string; color?: string; hoverCol
   if (type === 'Text') {
     const text = (Array.isArray(children) ? children : []).filter((child): child is string => typeof child === 'string').join('')
     const color = typeof props === 'object' && props ? Reflect.get(props, 'color') : undefined
+    const bold = typeof props === 'object' && props ? Reflect.get(props, 'bold') : undefined
     // `hover` sits beside `props`, not inside it (measured: dumped a tree and read the shape).
     const hover = Reflect.get(tree, 'hover')
     const hoverColor = typeof hover === 'object' && hover ? Reflect.get(hover, 'color') : undefined
-    return [{ text, ...(typeof color === 'string' ? { color } : {}), ...(typeof hoverColor === 'string' ? { hoverColor } : {}) }]
+    return [
+      {
+        text,
+        ...(typeof color === 'string' ? { color } : {}),
+        ...(bold === true ? { bold: true } : {}),
+        ...(typeof hoverColor === 'string' ? { hoverColor } : {}),
+      },
+    ]
   }
   return coloredLinesOf(children)
 }
@@ -238,7 +246,7 @@ describe('mod', () => {
     expect(linksOf(tree)).toEqual([{ href: 'https://github.com/meganemura/app/pull/42', text: '#42 PR OPEN' }])
     // The title is drawn by its own textSelectionOf row (a Client, opaque to textOf), not the
     // Button's label — see docs/decisions/0006.
-    expect(clientPropsOf(tree, 'pr:42:title-select')).toEqual({ lines: ['Add login'] })
+    expect(clientPropsOf(tree, 'pr:42:title-select')).toEqual({ lines: ['Add login'], bold: true })
   })
 
   test('the whole description is drawn, not cut to a few lines', async ($, on) => {
@@ -269,7 +277,16 @@ describe('mod', () => {
     const tree = await $.ui.render(PANE)
 
     expect(textOf(tree)).toContain('#12')
-    expect(clientPropsOf(tree, 'issue:12:title-select')).toEqual({ lines: ['Login is broken'] })
+    expect(clientPropsOf(tree, 'issue:12:title-select')).toEqual({ lines: ['Login is broken'], bold: true })
+
+    // A pull request and the issue it closes are two different kinds of thing; a divider marks
+    // the crossing so the list does not read as one undivided run of entries. Sized to the
+    // render input's own `bodyColumns` (80 in the `PANE` fixture above) less the pane's own
+    // right padding, the same width everything else inside the pane draws into.
+    const text = textOf(tree)
+    const divider = '─'.repeat(79)
+    expect(text.indexOf('#42')).toBeLessThan(text.indexOf(divider))
+    expect(text.indexOf(divider)).toBeLessThan(text.indexOf('#12'))
   })
 
   // There is no button to press any more (docs/decisions/0007): every arm is a drag over a
@@ -465,6 +482,9 @@ describe('mod', () => {
     // The symbol carries the outcome's colour; the name stays plain so a hover's colour is the
     // only colour change a linked check ever shows (see docs/decisions/0003's revision).
     expect(lines.find((line) => line.text.includes('MERGEABLE'))).toEqual({ text: expect.stringContaining('MERGEABLE') })
+    // The collapsed toggle row's status word is bold, alongside its colour — simple decoration,
+    // asked for alongside the identifier link and the title's own bold.
+    expect(lines.find((line) => line.text === 'failing')).toEqual({ text: 'failing', color: 'red', bold: true })
     expect(lines.find((line) => line.text === '✓')).toEqual({ text: '✓', color: 'green' })
     expect(lines.find((line) => line.text === ' lint')).toEqual({ text: ' lint' })
     expect(lines.find((line) => line.text === '✗')).toEqual({ text: '✗', color: 'red' })
@@ -475,6 +495,42 @@ describe('mod', () => {
       { href: 'https://github.com/meganemura/app/pull/42', text: '#42 PR OPEN' },
       { href: 'https://github.com/meganemura/app/actions/runs/1/job/2', text: '✗\n deploy-check' },
     ])
+  })
+
+  test('pressing the refresh button refetches entries and checks, and resets the poll', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
+      statuses: { 42: { isDraft: false, mergeable: 'MERGEABLE', reviewDecision: '', statusCheckRollup: [] } },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await settle()
+    await $.ui.render(PANE)
+
+    const listCallsAfterOpen = kept.runs.filter((argv) => argv.includes('list')).length
+    const statusCallsAfterOpen = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+
+    await kept.clock.advance(40_000)
+    await $.ui.press({ plugin: PLUGIN, key: 'refresh:button' })
+    await settle()
+
+    expect(kept.runs.filter((argv) => argv.includes('list')).length).toBeGreaterThan(listCallsAfterOpen)
+    const statusCallsAfterPress = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+    expect(statusCallsAfterPress).toBeGreaterThan(statusCallsAfterOpen)
+    // `refresh` (re-collecting entries from `gh pr list`, which carries no status) runs before
+    // `pollStatuses`, not alongside it — the other order would let `refresh` overwrite the
+    // status this same press just fetched, back to "fetching checks…".
+    expect(textOf(await $.ui.render(PANE))).toContain('no checks')
+
+    // The pane's own original schedule would have polled again here, 60s after it opened; the
+    // press restarted the timer, so nothing fires until a full period from the press itself.
+    await kept.clock.advance(20_000)
+    expect(kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length).toBe(statusCallsAfterPress)
+
+    await kept.clock.advance(40_000)
+    expect(kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length).toBeGreaterThan(statusCallsAfterPress)
   })
 
   test('closing the pane stops the poll', async ($, on) => {

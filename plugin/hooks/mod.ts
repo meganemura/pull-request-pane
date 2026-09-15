@@ -42,6 +42,11 @@ const CONTEXT_CUT_NOTE = '(The rest of this description was cut: it did not fit 
 const NOT_IN_REPOSITORY_TEXT = 'not in a GitHub repository'
 const NO_RELATED_TEXT = 'no related pull request or issue'
 
+// The pane's own right padding, named once: everything inside it (rows, entries, the Clients at
+// `width: '100%'`) draws into `bodyColumns` less this, so the kind divider is sized the same way
+// or it ends up one cell wider than everything around it and wraps onto a second row.
+const PANE_PADDING_RIGHT = 1
+
 // The closing-keyword set the spec names, one `#<n>` per match, case-insensitive.
 const CLOSE_KEYWORD_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*#(\d+)/gi
 
@@ -537,6 +542,27 @@ async function refresh(state: State): Promise<void> {
   }
 }
 
+// The refresh button's own ask, distinct from the automatic refreshes `turn.complete` and the
+// `gh ` Bash hook already trigger: those two preserve an armed entry's text
+// (`withArmedPreserved`) so a drag in progress does not have its offsets invalidated out from
+// under it; a person pressing the button is asking outright for the latest state, so dropping
+// whatever was armed is the expected trade, not a bug to guard against. Restarts the poll timer
+// too, so the person is not left waiting up to another `POLL_MS` for the checks fetch this same
+// press just asked for. `refresh` before `pollStatuses`, not together: `refresh` replaces
+// `state.entries` wholesale from `gh pr list`, whose records carry no `status` field, so
+// running the two concurrently let `refresh` finish after `pollStatuses` and overwrite the
+// status it had just written in (checked: run concurrently, the test below saw `fetching
+// checks…` where it expects `no checks`) — the opposite of what asking for both at once is for.
+async function manualRefresh(state: State, host: Host): Promise<void> {
+  state.armed = null
+  host.status(undefined)
+  stopPoll(state)
+  startPoll(state, host)
+  host.invalidate()
+  await refresh(state)
+  await pollStatuses(state)
+}
+
 // The real element types, so the typecheck refuses a prop the engine would refuse. `Text`
 // takes no `key`: giving it one drops the whole tree (measured, see the probe this file
 // replaced), so only `Box`, `Button` and `Client` below ever carry one. `Link` takes no `key`
@@ -556,12 +582,19 @@ const BODY_SELECT_SUFFIX = ':body-select'
 // read by the `ui.message` hook in `register`. `armedRange` is what is already armed for this
 // field (undefined otherwise), so a past drag's highlight and its click-to-drop both survive a
 // redraw, not just the moment the mouse button is held.
-function textSelectionOf(ui: Ui, key: string, suffix: string, text: string, armedRange: { start: number; end: number } | undefined): RenderElement {
+function textSelectionOf(
+  ui: Ui,
+  key: string,
+  suffix: string,
+  text: string,
+  armedRange: { start: number; end: number } | undefined,
+  bold: boolean,
+): RenderElement {
   const lines = text.split('\n')
   return ui.Client({
     key: `${key}${suffix}`,
     module: './description-selection.ts',
-    props: armedRange === undefined ? { lines } : { lines, armedRange },
+    props: { lines, ...(armedRange === undefined ? {} : { armedRange }), ...(bold ? { bold: true } : {}) },
     width: '100%',
   })
 }
@@ -666,7 +699,7 @@ function checksSectionOf(ui: Ui, key: string, status: PrStatus, state: State, ho
           host.invalidate()
         },
       }),
-      Text({ ...(color === undefined ? {} : { color }), children: statusWordOf(status.checks) }),
+      Text({ ...(color === undefined ? {} : { color }), bold: true, children: statusWordOf(status.checks) }),
     ],
   })
 
@@ -701,6 +734,31 @@ function identifierRowOf(ui: Ui, key: string, entry: Entry): RenderElement {
   })
 }
 
+const REFRESH_BUTTON_KEY = 'refresh'
+
+// Moved to the top of the pane and turned into a button (asked for, in place of the plain
+// `refreshed <time>` line the footer used to end with): pressing it is an explicit ask for the
+// latest entries and checks right now, not just a status readout. See `manualRefresh` for what
+// a press actually does.
+function refreshButtonOf(ui: Ui, state: State, host: Host): RenderElement {
+  const { Box, Button } = ui
+  const label = state.refreshedAt === null ? '↻ reading…' : `↻ refreshed ${state.refreshedAt}`
+  return Box({
+    key: REFRESH_BUTTON_KEY,
+    marginBottom: 1,
+    children: [Button({ key: `${REFRESH_BUTTON_KEY}:button`, label, onPress: () => void manualRefresh(state, host).catch(() => undefined) })],
+  })
+}
+
+// Marks where the list crosses from a pull request to an issue or back, so the two do not read
+// as one undivided list of the same kind of thing (asked for: the branch's own closing issues
+// and the transcript's mentions mix pull requests and issues together with nothing between them).
+// Sized to `bodyColumns`, the render input's own cells-across-the-body figure — its d.ts names
+// this exact use ("size a table or a rule to it rather than to `viewport.columns`").
+function kindDividerOf(ui: Ui, bodyColumns: number): RenderElement {
+  return ui.Text({ dimColor: true, children: '─'.repeat(Math.max(bodyColumns - PANE_PADDING_RIGHT, 0)) })
+}
+
 // No button: a press-to-arm-the-whole-thing control was redundant once a drag could already
 // cover all of a field's text, and it needed its own separate "(armed)" label where a range arm
 // already has the highlight itself for feedback (real-terminal feedback: the drag-select design
@@ -719,32 +777,40 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host): RenderEleme
     rowGap: 1,
     children: [
       identifierRowOf(ui, key, entry),
-      textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, armedRangeFor(state, key, 'title')),
+      textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, armedRangeFor(state, key, 'title'), true),
       ...(checksRows.length === 0 ? [] : [Box({ key: `${key}:checks`, flexDirection: 'column', children: checksRows })]),
-      textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, armedRangeFor(state, key, 'description')),
+      textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, armedRangeFor(state, key, 'description'), false),
     ],
   })
 }
 
-function paneOf(ui: Ui, state: State, host: Host): RenderElement {
+function paneOf(ui: Ui, state: State, host: Host, bodyColumns: number): RenderElement {
   const { Box, Text } = ui
-  const rows: RenderElement[] =
-    state.error !== null
-      ? [Text({ color: 'red', children: state.error })]
-      : state.entries.map((entry) => entryBoxOf(ui, entry, state, host))
+  const rows: RenderElement[] = []
+  if (state.error !== null) {
+    rows.push(Text({ color: 'red', children: state.error }))
+  } else {
+    state.entries.forEach((entry, index) => {
+      const previous = state.entries[index - 1]
+      if (previous !== undefined && previous.kind !== entry.kind) rows.push(kindDividerOf(ui, bodyColumns))
+      rows.push(entryBoxOf(ui, entry, state, host))
+    })
+  }
 
-  const refreshedLine = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
   const statusLine = state.isPolling ? 'status updating…' : state.statusAt === null ? null : `status ${state.statusAt}`
-  const footerLines = [Text({ dimColor: true, children: refreshedLine }), ...(statusLine === null ? [] : [Text({ dimColor: true, children: statusLine })])]
+  const footerLines = statusLine === null ? [] : [Text({ dimColor: true, children: statusLine })]
+
+  // `rowGap` between entries (and a divider counts as one of the rows it separates), not
+  // before the first or after the last — a blank line between one entry and the next.
+  const children: RenderElement[] = [refreshButtonOf(ui, state, host), Box({ flexDirection: 'column', rowGap: 1, children: rows })]
+  if (footerLines.length > 0) children.push(Box({ flexDirection: 'column', marginTop: 1, children: footerLines }))
 
   return Box({
     key: 'pull-request-pane',
     flexDirection: 'column',
     paddingTop: 1,
-    paddingRight: 1,
-    // `rowGap` between entries, not before the first or after the last — a blank line
-    // separating one entry from the next, asked for alongside the gaps within one entry.
-    children: [Box({ flexDirection: 'column', rowGap: 1, children: rows }), Box({ flexDirection: 'column', marginTop: 1, children: footerLines })],
+    paddingRight: PANE_PADDING_RIGHT,
+    children,
   })
 }
 
@@ -821,7 +887,7 @@ export function register(on: On) {
     // override, but the guard also narrows `$.ui.resolve`'s return type to `Elements['terminal']`.
     if (e.surface !== 'terminal') return next(e)
     const { Box, Button, Text, Link, Client } = await $.ui.resolve(e)
-    return paneOf({ Box, Button, Text, Link, Client }, state, state.host)
+    return paneOf({ Box, Button, Text, Link, Client }, state, state.host, e.props.bodyColumns)
   })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {

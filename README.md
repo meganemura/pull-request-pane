@@ -9,7 +9,8 @@ related to the current session in a pane beside the transcript.
   mergeability refresh on a timer.
 
 Issues that a pull request closes, and issues the transcript mentions, appear
-as entries too.
+as entries too, with a line between a run of pull requests and a run of
+issues so the two do not read as one list of the same kind of thing.
 
 ## Requirements
 
@@ -24,13 +25,23 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/pull-request-pa
 
 Type `/pull-request-pane` to show or hide the pane.
 
+## Refresh
+
+A `↻ refreshed <time>` button sits above the entries (`↻ reading…` before the first one lands).
+Press it to refetch every entry's title, description and checks right now, instead of waiting
+for the next automatic refresh or the 60-second poll — the poll's own schedule restarts from the
+press. Pressing it drops whatever is armed: unlike the refresh a turn or a `gh ` command
+triggers on their own, this one is an explicit ask for the latest state, so keeping a stale
+selection around would be the wrong trade.
+
 ## Attach a description or a title
 
 Each entry shows its identifier (`#<n> PR <state>` for a pull request, `#<n> Issue <state>` for
 an issue) as a link to it on GitHub — hover it and it highlights — then a blank line, its
-title, another blank line, its checks (a pull request only), another blank line, then its full
-description. Drag over the title or the description to attach it: the covered text highlights
-as you drag, and releasing arms that selection to ride your next prompt — the status line says
+bold title, another blank line, its checks (a pull request only, its status word bold too),
+another blank line, then its full description. Drag over the title or the description to attach
+it: the covered text highlights as you drag, and releasing arms that selection to ride your next
+prompt — the status line says
 so, and the highlight stays, colored, as the only sign it is armed (dragging over all of a field
 arms the whole thing the same way). Nothing is written into the prompt box — type your
 instruction as you normally would, whatever is already there included, and press Enter. Claude
@@ -48,7 +59,8 @@ do with what is armed.
 
 Each pull request's status is fetched once as soon as the pane opens, and every 60 seconds
 after that while it stays open. A pull request with no status yet shows `fetching checks…`;
-the footer reads `status updating…` while a fetch is in flight, `status <time>` once it lands.
+the footer below the entries reads `status updating…` while a fetch is in flight, `status
+<time>` once it lands.
 Once fetched, it draws as a `▶ checks` toggle and one coloured word — `failing` (red),
 `running` (yellow), `passing` (green), or `no checks` — so you can tell at a glance whether to
 look further. Press the

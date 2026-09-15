@@ -5,18 +5,21 @@
 // description into the prompt box, so the person types one instruction and Claude edits the
 // description on GitHub through `gh pr edit` / `gh issue edit`.
 //
+// While the pane is open, a 60-second timer refetches each pull request's checks, review
+// decision and mergeability and draws them beside the entry; the timer starts when the pane
+// opens and stops when it closes.
+//
 // Must NOT know about: how the description gets edited (that is the model's job, driven by
 // the quoted text, never this file's); GitHub authentication (`gh auth status` failing is
 // shown as a line in the pane, not handled); paragraph- or line-level selection (a later
-// milestone); status polling (the next commit adds it, behind the same `Entry.status` field
-// this one leaves undefined).
+// milestone).
 //
 // It loads only where Claude Code has function hooks enabled. The engine's validator reads
 // this file statically, so every call on `$` is spelled `$.noun.event(...)` and `$` is handed
 // only to the function declarations at the top of the file; the rest of the module holds a
 // `Host`, a bundle of closures built once at `session.start`.
 
-import type { Elements, On, RenderElement, SessionMessage } from 'claude-code'
+import type { Elements, On, RenderElement, SessionMessage, Timer } from 'claude-code'
 
 const PANE_ID = 'pull-request-pane'
 const PANE_TITLE = 'pull-request-pane'
@@ -28,12 +31,18 @@ const GH_TIMEOUT_MS = 15_000
 const MAX_BODY_LINES = 60
 const TITLE_PAD_COLUMNS = 12
 const DEFAULT_TITLE_MAX_CHARS = 50
+const POLL_MS = 60_000
 
 const NOT_IN_REPOSITORY_TEXT = 'not in a GitHub repository'
 const NO_RELATED_TEXT = 'no related pull request or issue'
 
 // The closing-keyword set the spec names, one `#<n>` per match, case-insensitive.
 const CLOSE_KEYWORD_RE = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*#(\d+)/gi
+
+// A CheckRun's `conclusion` values the spec sorts into fail and skipped; anything else
+// completed reads as pass, and an incomplete or absent conclusion reads as pending.
+const FAIL_CONCLUSIONS = new Set(['FAILURE', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'])
+const SKIP_CONCLUSIONS = new Set(['SKIPPED', 'NEUTRAL'])
 
 type Entry = {
   kind: 'pr' | 'issue'
@@ -45,7 +54,7 @@ type Entry = {
   status?: PrStatus
 }
 
-// Filled by the status poll (next commit); left undefined by this one.
+// Filled by the status poll; undefined until the first one lands after the pane opens.
 type PrStatus = {
   isDraft: boolean
   mergeable: string
@@ -56,11 +65,16 @@ type PrStatus = {
 
 type GhRecord = { number: number; title: string; body: string; url: string; state: string }
 
+// One `statusCheckRollup` element: a CheckRun (`status`, `conclusion`) or a StatusContext
+// (`state`) — gh's two shapes for one check, told apart by which fields are present.
+type CheckRollupItem = { status?: string; conclusion?: string | null; state?: string }
+
 type Host = {
   cwd: () => Promise<string>
   messages: () => Promise<readonly SessionMessage[]>
   run: (argv: readonly string[], cwd: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
   fill: (text: string) => Promise<{ isFilled: boolean }>
+  every: (ms: number, fn: () => void) => Timer
   open: () => Promise<void>
   close: () => Promise<void>
   invalidate: () => void
@@ -78,6 +92,9 @@ type State = {
   isRefreshing: boolean
   isQueued: boolean
   quoted: Set<string>
+  pollTimer: Timer | null
+  isPolling: boolean
+  statusAt: string | null
 }
 
 // The host is a bundle of closures over `$`, built once at `session.start`, so the rest of
@@ -89,6 +106,7 @@ function hostOf($: any): Host {
     messages: () => $.session.messages(),
     run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: GH_TIMEOUT_MS }),
     fill: (text) => $.prompt.fill({ text }),
+    every: (ms, fn) => $.clock.every(ms, fn),
     open: () => $.ui.open({ id: PANE_ID, title: PANE_TITLE }),
     close: () => $.ui.close({ id: PANE_ID }),
     invalidate: () => $.ui.invalidate('ui.render'),
@@ -265,6 +283,80 @@ function titleFitOf(title: string, maxChars: number): string {
   return title.length > maxChars ? `${title.slice(0, Math.max(1, maxChars - 1))}…` : title
 }
 
+// The spec's aggregation, item by item: a CheckRun (has `conclusion`) is counted by its
+// conclusion, a StatusContext (has `state` and no `conclusion`) by its state; a CheckRun still
+// running (no conclusion yet) and a StatusContext still pending both fall into `pending`.
+function checksOf(items: readonly CheckRollupItem[]): PrStatus['checks'] {
+  const checks = { pass: 0, fail: 0, pending: 0, skipped: 0 }
+  for (const item of items) {
+    const isCheckRun = item.conclusion !== undefined || item.status !== undefined
+    if (isCheckRun) {
+      const conclusion = item.conclusion ?? null
+      if (conclusion === 'SUCCESS') checks.pass += 1
+      else if (conclusion !== null && FAIL_CONCLUSIONS.has(conclusion)) checks.fail += 1
+      else if (conclusion !== null && SKIP_CONCLUSIONS.has(conclusion)) checks.skipped += 1
+      else checks.pending += 1
+    } else if (item.state === 'SUCCESS') checks.pass += 1
+    else if (item.state === 'FAILURE' || item.state === 'ERROR') checks.fail += 1
+    else checks.pending += 1
+  }
+  return checks
+}
+
+type GhPrStatusRecord = { isDraft: boolean; mergeable: string; reviewDecision: string; statusCheckRollup: CheckRollupItem[] }
+
+async function fetchStatusOf(host: Host, cwd: string, number: number): Promise<PrStatus | null> {
+  try {
+    const { exitCode, stdout } = await host.run(
+      ['gh', 'pr', 'view', String(number), '--json', 'isDraft,mergeable,reviewDecision,statusCheckRollup'],
+      cwd,
+    )
+    if (exitCode !== 0) return null
+    const parsed = JSON.parse(stdout) as GhPrStatusRecord
+    return {
+      isDraft: parsed.isDraft,
+      mergeable: parsed.mergeable,
+      reviewDecision: parsed.reviewDecision,
+      checks: checksOf(parsed.statusCheckRollup ?? []),
+      fetchedAt: new Date().toLocaleTimeString(),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Not the entry re-collection `refresh` does: only the status of the pull requests already on
+// screen. A PR whose fetch fails keeps its last known status rather than losing it, so one bad
+// `gh pr view` does not blank a status the previous poll drew.
+async function pollStatuses(state: State): Promise<void> {
+  const host = state.host
+  if (host === null || state.isPolling) return
+  state.isPolling = true
+  try {
+    const cwd = await host.cwd()
+    const numbers = state.entries.filter((entry) => entry.kind === 'pr').map((entry) => entry.number)
+    for (const number of numbers) {
+      const status = await fetchStatusOf(host, cwd, number)
+      if (status === null) continue
+      state.entries = state.entries.map((entry) => (entry.kind === 'pr' && entry.number === number ? { ...entry, status } : entry))
+    }
+    state.statusAt = new Date().toLocaleTimeString()
+    host.invalidate()
+  } finally {
+    state.isPolling = false
+  }
+}
+
+function startPoll(state: State, host: Host): void {
+  if (state.pollTimer !== null) return
+  state.pollTimer = host.every(POLL_MS, () => void pollStatuses(state).catch(() => undefined))
+}
+
+function stopPoll(state: State): void {
+  state.pollTimer?.cancel()
+  state.pollTimer = null
+}
+
 // Coalesced, headsign's shape exactly: a refresh asked for while one runs is run once more
 // after it, not in parallel, and there is no separate debounce timer.
 async function refresh(state: State): Promise<void> {
@@ -310,6 +402,30 @@ function descriptionLinesOf(ui: Ui, body: string): RenderElement[] {
     .map((line) => Text({ dimColor: true, children: line }))
 }
 
+function checksSegmentOf(checks: PrStatus['checks']): string {
+  const parts: string[] = []
+  if (checks.pass > 0) parts.push(`✓${checks.pass}`)
+  if (checks.fail > 0) parts.push(`✗${checks.fail}`)
+  if (checks.pending > 0) parts.push(`…${checks.pending}`)
+  if (checks.skipped > 0) parts.push(`⏭${checks.skipped}`)
+  return parts.join(' ')
+}
+
+// Red beats yellow beats green: one failing check makes the line red even if the rest passed.
+function statusColorOf(checks: PrStatus['checks']): string | undefined {
+  if (checks.fail > 0) return 'red'
+  if (checks.pending > 0) return 'yellow'
+  if (checks.pass > 0) return 'green'
+  return undefined
+}
+
+function statusLineOf(ui: Ui, status: PrStatus): RenderElement {
+  const { Text } = ui
+  const segments = [checksSegmentOf(status.checks), status.reviewDecision, status.mergeable].filter((segment) => segment !== '')
+  const color = statusColorOf(status.checks)
+  return Text({ ...(color === undefined ? {} : { color }), children: segments.join(' · ') })
+}
+
 function entryBoxOf(ui: Ui, entry: Entry, index: number, state: State, host: Host, repo: string | null, titleMaxChars: number): RenderElement {
   const { Box, Button, Text } = ui
   const key = entryKeyOf(entry)
@@ -337,6 +453,7 @@ function entryBoxOf(ui: Ui, entry: Entry, index: number, state: State, host: Hos
           })
         },
       }),
+      ...(entry.kind === 'pr' && entry.status ? [statusLineOf(ui, entry.status)] : []),
       ...descriptionLinesOf(ui, entry.body),
     ],
   })
@@ -349,14 +466,15 @@ function paneOf(ui: Ui, state: State, host: Host, titleMaxChars: number): Render
       ? [Text({ color: 'red', children: state.error })]
       : state.entries.map((entry, index) => entryBoxOf(ui, entry, index, state, host, state.repo, titleMaxChars))
 
-  const footer = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
+  const refreshedLine = state.refreshedAt === null ? 'reading…' : `refreshed ${state.refreshedAt}`
+  const footerLines = [Text({ dimColor: true, children: refreshedLine }), ...(state.statusAt === null ? [] : [Text({ dimColor: true, children: `status ${state.statusAt}` })])]
 
   return Box({
     key: 'pull-request-pane',
     flexDirection: 'column',
     paddingTop: 1,
     paddingRight: 1,
-    children: [Box({ flexDirection: 'column', children: rows }), Box({ marginTop: 1, children: [Text({ dimColor: true, children: footer })] })],
+    children: [Box({ flexDirection: 'column', children: rows }), Box({ flexDirection: 'column', marginTop: 1, children: footerLines })],
   })
 }
 
@@ -371,6 +489,9 @@ export function register(on: On) {
     isRefreshing: false,
     isQueued: false,
     quoted: new Set(),
+    pollTimer: null,
+    isPolling: false,
+    statusAt: null,
   }
 
   on('session.start', async ($, e, next) => {
@@ -388,6 +509,7 @@ export function register(on: On) {
     if (state.isOpen) {
       await host.close()
       state.isOpen = false
+      stopPoll(state)
       return { text: 'pull-request-pane hidden' }
     }
 
@@ -397,6 +519,7 @@ export function register(on: On) {
 
     await host.open()
     state.isOpen = true
+    startPoll(state, host)
     await refresh(state)
     return { text: 'pull-request-pane shown' }
   })
@@ -410,7 +533,10 @@ export function register(on: On) {
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
     const result = await next(e)
-    if (result.deny === undefined) state.isOpen = false
+    if (result.deny === undefined) {
+      state.isOpen = false
+      stopPoll(state)
+    }
     return result
   })
 

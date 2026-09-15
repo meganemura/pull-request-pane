@@ -6,7 +6,7 @@
 // `gh` for and what it draws and fills, never what a real `gh` prints.
 
 import type { CommandRunInput, On, RenderInput, SessionMessage } from 'claude-code'
-import { describe, expect, test, tier } from 'claude-code/testing'
+import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
 tier('user')
 
@@ -25,7 +25,11 @@ const PANE: RenderInput<'Pane'> = {
 
 const RUN: CommandRunInput = { command: COMMAND, args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } }
 
+const POLL_MS = 60_000
+const STATUS_JSON_FIELDS = 'isDraft,mergeable,reviewDecision,statusCheckRollup'
+
 type GhRecord = { number: number; title: string; body: string; url: string; state: string }
+type GhStatusRecord = { isDraft: boolean; mergeable: string; reviewDecision: string; statusCheckRollup: unknown[] }
 
 type WorldOptions = {
   branch?: string | null
@@ -33,6 +37,7 @@ type WorldOptions = {
   branchPrs?: GhRecord[]
   issues?: Record<number, GhRecord>
   prs?: Record<number, GhRecord>
+  statuses?: Record<number, GhStatusRecord>
   messages?: SessionMessage[]
   isFilled?: boolean
 }
@@ -46,6 +51,7 @@ function world(on: On, options: WorldOptions = {}) {
   const closed: string[] = []
   const logged: string[] = []
   const filled: string[] = []
+  const clock = mock.clock(on)
 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -76,6 +82,13 @@ function world(on: On, options: WorldOptions = {}) {
         : { value: { exitCode: 1, stdout: '', stderr: 'no such issue' } }
     }
 
+    if (cmd === 'gh' && rest[0] === 'pr' && rest[1] === 'view' && rest.includes(STATUS_JSON_FIELDS)) {
+      const record = options.statuses?.[Number(rest[2])]
+      return record
+        ? { value: { exitCode: 0, stdout: JSON.stringify(record), stderr: '' } }
+        : { value: { exitCode: 1, stdout: '', stderr: 'no such pull request' } }
+    }
+
     if (cmd === 'gh' && rest[0] === 'pr' && rest[1] === 'view') {
       const record = options.prs?.[Number(rest[2])]
       return record
@@ -104,7 +117,7 @@ function world(on: On, options: WorldOptions = {}) {
     return { isFilled: options.isFilled ?? true }
   })
 
-  return { runs, opened, closed, logged, filled }
+  return { runs, opened, closed, logged, filled, clock }
 }
 
 // The strings a drawn tree carries: a Text's joined children, a Button's label.
@@ -218,5 +231,60 @@ describe('mod', () => {
     await $.ui.render(PANE)
 
     expect(kept.runs.length).toBe(before)
+  })
+
+  test('opening the pane starts a 60s status poll that draws the checks', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      statuses: {
+        42: {
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: 'APPROVED',
+          statusCheckRollup: [
+            { status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { status: 'COMPLETED', conclusion: 'FAILURE' },
+            { status: 'IN_PROGRESS', conclusion: null },
+            { status: 'IN_PROGRESS', conclusion: null },
+          ],
+        },
+      },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+
+    const statusCallsBefore = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
+    expect(statusCallsBefore).toHaveLength(0)
+
+    await kept.clock.advance(POLL_MS)
+
+    const statusCalls = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS))
+    expect(statusCalls).toHaveLength(1)
+
+    const text = textOf(await $.ui.render(PANE))
+    expect(text).toContain('✓3 ✗1 …2 · APPROVED · MERGEABLE')
+  })
+
+  test('closing the pane stops the poll', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      statuses: { 42: { isDraft: false, mergeable: 'MERGEABLE', reviewDecision: '', statusCheckRollup: [] } },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await kept.clock.advance(POLL_MS)
+    const before = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+
+    await $.command.run(RUN)
+    await kept.clock.advance(POLL_MS)
+
+    const after = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+    expect(after).toBe(before)
   })
 })

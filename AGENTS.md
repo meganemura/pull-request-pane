@@ -10,12 +10,15 @@ GitHub pull requests that relate to the current session: the pull request of
 the checked-out branch first, then the issues it closes and the pull
 requests and issues the transcript mentions. The pane has two functions:
 
-1. **Description attach.** Each entry has a button. A press arms that
-   entry's description to ride the person's next prompt as context (never
-   the prompt box itself), so the person types one instruction and Claude
-   edits the description on GitHub. A drag over the description arms just
-   the selected substring instead, through a `Client` surface module
-   (`plugin/hooks/description-selection.ts`).
+1. **Description or title attach.** Each entry has a button. A press arms
+   that entry's whole description to ride the person's next prompt as
+   context (never the prompt box itself), so the person types one
+   instruction and Claude edits the description on GitHub. A drag over the
+   title or the description arms just the selected substring of that field
+   instead, through a `Client` surface module
+   (`plugin/hooks/description-selection.ts`, reused for both fields — see
+   `docs/decisions/0006`). An entry with something armed pauses its own
+   automatic refresh until it is disarmed.
 2. **Status.** While the pane is open, the module polls `gh` for each pull
    request's checks, review decision and mergeability, and draws the result
    beside the entry.

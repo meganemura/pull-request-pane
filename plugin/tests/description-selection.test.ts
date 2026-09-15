@@ -12,6 +12,7 @@ import {
   drawDescriptionSelection,
   isEmptyRange,
   orderedRangeOf,
+  posOf,
   selectedColumnsOf,
 } from '../hooks/description-selection'
 
@@ -49,6 +50,16 @@ describe('description-selection geometry', () => {
     expect(selectedColumnsOf(range, 5, 2)).toEqual({ start: 0, end: 1 })
     expect(selectedColumnsOf(range, 5, 3)).toBeNull()
   })
+
+  test('posOf round-trips absoluteOffsetOf for every position in a 3-line fixture', () => {
+    const lines = ['line one', 'line two', 'x']
+    for (let line = 0; line < lines.length; line += 1) {
+      for (let col = 0; col <= (lines[line]?.length ?? 0); col += 1) {
+        const pos = { line, col }
+        expect(posOf(lines, absoluteOffsetOf(lines, pos))).toEqual(pos)
+      }
+    }
+  })
 })
 
 type PointerEvent = { type: string; x: number; y: number }
@@ -65,7 +76,7 @@ function elementsOf() {
 // current drag, not the one the module started with. `claude plugin test plugin`'s kit has
 // nothing built in for this (no such call on its Engine or Mock types), so this is this
 // plugin's own harness, not a kit feature.
-function driveDescriptionSelection(lines: readonly string[]) {
+function driveDescriptionSelection(lines: readonly string[], armedRange?: { start: number; end: number }) {
   const elements = elementsOf()
   const posted: unknown[] = []
   let state: unknown
@@ -74,7 +85,7 @@ function driveDescriptionSelection(lines: readonly string[]) {
 
   function draw() {
     tree = drawDescriptionSelection(
-      { lines },
+      armedRange === undefined ? { lines } : { lines, armedRange },
       {
         elements: elements as never,
         state,
@@ -103,13 +114,42 @@ function driveDescriptionSelection(lines: readonly string[]) {
 }
 
 describe('description-selection pointer handling', () => {
-  test('down then up with no movement posts cleared, not an empty selection', () => {
+  test('a click with no movement and nothing armed posts nothing', () => {
     const drive = driveDescriptionSelection(['line one', 'line two'])
 
     drive.fire({ type: 'down', x: 2, y: 0 })
     drive.fire({ type: 'up', x: 2, y: 0 })
 
+    expect(drive.posted).toEqual([])
+  })
+
+  test('a click landing inside the armed range posts cleared: this is how a selection is dropped', () => {
+    // "line one" is offsets 0-8; armedRange 0..8 covers all of it.
+    const drive = driveDescriptionSelection(['line one', 'line two'], { start: 0, end: 8 })
+
+    drive.fire({ type: 'down', x: 2, y: 0 })
+    drive.fire({ type: 'up', x: 2, y: 0 })
+
     expect(drive.posted).toEqual([{ type: 'cleared' }])
+  })
+
+  test('a click landing outside the armed range posts nothing: it neither drops nor starts one', () => {
+    const drive = driveDescriptionSelection(['line one', 'line two'], { start: 0, end: 8 })
+
+    drive.fire({ type: 'down', x: 2, y: 1 })
+    drive.fire({ type: 'up', x: 2, y: 1 })
+
+    expect(drive.posted).toEqual([])
+  })
+
+  test('a real drag posts a new selection even when it starts inside the armed range', () => {
+    const drive = driveDescriptionSelection(['line one', 'line two'], { start: 0, end: 8 })
+
+    drive.fire({ type: 'down', x: 0, y: 0 })
+    drive.fire({ type: 'move', x: 2, y: 1 })
+    drive.fire({ type: 'up', x: 2, y: 1 })
+
+    expect(drive.posted).toEqual([{ type: 'selected', start: 0, end: 11 }])
   })
 
   test('down, move, up posts the absolute character range the drag covered', () => {
@@ -156,5 +196,28 @@ describe('description-selection pointer handling', () => {
     const runs = row.children.map((child) => child.props.children)
 
     expect(runs).toEqual(['a', 'bc', 'def'])
+  })
+
+  test('down with no move yet draws the clicked line as plain text, not a false blank', () => {
+    const drive = driveDescriptionSelection(['abcdef'])
+
+    drive.fire({ type: 'down', x: 3, y: 0 })
+
+    const row = drive.tree() as { children: { type: string; props: { children: unknown[] } }[] }
+    const line = row.children[0]
+    if (line === undefined) throw new Error('expected one row')
+
+    expect(line.type).toBe('Box')
+    expect(line.props.children).toEqual([{ type: 'Text', props: { children: 'abcdef' }, children: ['abcdef'] }])
+  })
+
+  test('an already-armed range stays highlighted with no drag in progress', () => {
+    const drive = driveDescriptionSelection(['abcdef'], { start: 1, end: 4 })
+
+    const row = (drive.tree() as { children: { children: { props: { children: string } }[] }[] }).children[0]
+    if (row === undefined) throw new Error('expected one row')
+    const runs = row.children.map((child) => child.props.children)
+
+    expect(runs).toEqual(['a', 'bcd', 'ef'])
   })
 })

@@ -24,23 +24,28 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/pull-request-pa
 
 Type `/pull-request-pane` to show or hide the pane.
 
-## Attach a description
+## Attach a description or a title
 
-Each entry shows a button: `#<n> PR <state> <title>` for a pull request, `#<n> Issue <state>
-<title>` for an issue. Press it (click it, or move to it with the arrow keys and press Enter)
-to arm that pull request's or issue's description to ride your next prompt; the status line
-says so, and the entry gains `(armed)`. Nothing is written into the prompt box — type your
-instruction as you normally would, whatever is already there included, and press Enter. Claude
-reads the description beside your prompt and edits it on GitHub with `gh pr edit --body` or `gh
-issue edit --body`.
+Each entry shows a button (`#<n> PR <state>` for a pull request, `#<n> Issue <state>` for an
+issue), then its title, then — for a pull request — its checks, then its full description.
+Press the button (click it, or move to it with the arrow keys and press Enter) to arm that
+entry's whole description to ride your next prompt; the status line says so, and the entry
+gains `(armed)`. Nothing is written into the prompt box — type your instruction as you normally
+would, whatever is already there included, and press Enter. Claude reads the description beside
+your prompt and edits it on GitHub with `gh pr edit --body` or `gh issue edit --body`. Press the
+same button again to drop it before it rides anywhere.
 
-Press the same entry again to drop it before it rides anywhere. Only one entry is armed at a
-time; arming a second one replaces the first.
+To attach only part of the title or the description, drag over it instead of pressing the
+button: the covered text highlights as you drag, and releasing arms just that selection — the
+status line says so, and the highlight stays, colored, as the only sign it is armed. Click the
+highlighted text again (with no drag) to drop it. Editing a title this way rides `gh pr edit
+--title` instead of `--body`. Only one thing is armed at a time across the whole entry — the
+button's whole description, a description selection, or a title selection — arming another
+replaces it, and its own automatic refresh pauses while it stays armed, so what is about to
+ride your prompt does not change out from under you.
 
-To attach only part of a description, drag over it instead of pressing the button: the covered
-text highlights as you drag, and releasing arms just that selection (the status line and the
-entry's `(selection armed)` say so). A click with no drag clears an armed selection. Dragging
-and the button both write to the same one-armed-thing-at-a-time slot.
+While a pull request is armed (by button or by a drag on either field), it stops updating on
+the 60-second poll and on any other automatic refresh until it is disarmed.
 
 ## Checks, review and mergeability
 
@@ -56,9 +61,14 @@ toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <rev
 highlights, so it reads as clickable. Issues have no status.
 
 Each entry's description is drawn in full below its title and status, not cut to a few lines. A
-single line longer than the pane is wide does not wrap for the drag; the drag-select feature is
-new (2026-09-16) and has not yet been tried in a real terminal beyond the sandbox — a report of
-anything odd there is welcome.
+single line longer than the pane is wide does not wrap for the drag.
+
+## Persistence
+
+Opening the pane, or the pane's own data changing, is saved to this plugin's own store, so a
+reload of this file (developing against it under `--plugin-dir`, or any other reload the engine
+does on its own) shows the last known entries right away instead of `reading…` — a background
+refresh catches up from there once you next interact with the session.
 
 ## Status
 

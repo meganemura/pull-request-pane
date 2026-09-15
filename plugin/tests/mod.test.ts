@@ -41,6 +41,9 @@ type WorldOptions = {
   prs?: Record<number, GhRecord>
   statuses?: Record<number, GhStatusRecord>
   messages?: SessionMessage[]
+  // Seeds `$.store` before `session.start` runs, so a test can simulate a hot reload: the
+  // module's own in-memory `state` is gone, but this (a real store's persistence) is not.
+  store?: Record<string, unknown>
 }
 
 // A prompt as the person submits it from the composer with a plain Enter, carrying the context
@@ -125,7 +128,14 @@ function world(on: On, options: WorldOptions = {}) {
     return { value: undefined }
   })
 
-  return { runs, opened, closed, logged, statuses, clock }
+  const store = new Map<string, unknown>(Object.entries(options.store ?? {}))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+
+  return { runs, opened, closed, logged, statuses, clock, store }
 }
 
 // The strings a drawn tree carries: a Text's joined children, a Button's label.
@@ -228,10 +238,12 @@ describe('mod', () => {
     await $.session.start(SESSION)
     await $.command.run(RUN)
 
-    const text = textOf(await $.ui.render(PANE))
+    const tree = await $.ui.render(PANE)
 
-    expect(text).toContain('#42')
-    expect(text).toContain('Add login')
+    expect(textOf(tree)).toContain('#42')
+    // The title is drawn by its own textSelectionOf row (a Client, opaque to textOf), not the
+    // Button's label — see docs/decisions/0006.
+    expect(clientPropsOf(tree, 'pr:42:title-select')).toEqual({ lines: ['Add login'] })
   })
 
   test('the whole description is drawn, not cut to a few lines', async ($, on) => {
@@ -244,7 +256,7 @@ describe('mod', () => {
     await $.session.start(SESSION)
     await $.command.run(RUN)
 
-    const props = clientPropsOf(await $.ui.render(PANE), 'pr:42:select')
+    const props = clientPropsOf(await $.ui.render(PANE), 'pr:42:body-select')
 
     expect(props).toEqual({ lines: ['line one', 'line two', 'line three', 'line four', 'line five'] })
   })
@@ -259,10 +271,10 @@ describe('mod', () => {
     await $.session.start(SESSION)
     await $.command.run(RUN)
 
-    const text = textOf(await $.ui.render(PANE))
+    const tree = await $.ui.render(PANE)
 
-    expect(text).toContain('#12')
-    expect(text).toContain('Login is broken')
+    expect(textOf(tree)).toContain('#12')
+    expect(clientPropsOf(tree, 'issue:12:title-select')).toEqual({ lines: ['Login is broken'] })
   })
 
   test('pressing a Button arms the entry; the next prompt submitted carries its description as context, never the box', async ($, on) => {
@@ -369,42 +381,50 @@ describe('mod', () => {
       expect(selectionMessageOf('not an object')).toBeNull()
     })
 
-    test('nextArmedOf: selected arms this entry, replacing whatever was armed', () => {
+    test('nextArmedOf: selected arms this entry and field, replacing whatever was armed', () => {
       const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
       const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
-      const armedA = nextArmedOf(null, entryA, { type: 'selected', start: 0, end: 3 })
+      const armedA = nextArmedOf(null, entryA, 'description', { type: 'selected', start: 0, end: 3 })
 
-      expect(armedA).toEqual({ entry: entryA, range: { start: 0, end: 3 } })
-      expect(nextArmedOf(armedA, entryB, { type: 'selected', start: 1, end: 2 })).toEqual({ entry: entryB, range: { start: 1, end: 2 } })
+      expect(armedA).toEqual({ entry: entryA, field: 'description', range: { start: 0, end: 3 } })
+      expect(nextArmedOf(armedA, entryB, 'title', { type: 'selected', start: 1, end: 2 })).toEqual({ entry: entryB, field: 'title', range: { start: 1, end: 2 } })
     })
 
-    test('nextArmedOf: cleared drops only a selection armed on that same entry', () => {
+    test('nextArmedOf: cleared drops only a selection armed on that same entry and field', () => {
       const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
       const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
-      const armedA = { entry: entryA, range: { start: 0, end: 3 } }
+      const armedA = { entry: entryA, field: 'description' as const, range: { start: 0, end: 3 } }
 
-      expect(nextArmedOf(armedA, entryA, { type: 'cleared' })).toBeNull()
-      expect(nextArmedOf(armedA, entryB, { type: 'cleared' })).toBe(armedA)
-      expect(nextArmedOf(null, entryA, { type: 'cleared' })).toBeNull()
+      expect(nextArmedOf(armedA, entryA, 'description', { type: 'cleared' })).toBeNull()
+      expect(nextArmedOf(armedA, entryA, 'title', { type: 'cleared' })).toBe(armedA)
+      expect(nextArmedOf(armedA, entryB, 'description', { type: 'cleared' })).toBe(armedA)
+      expect(nextArmedOf(null, entryA, 'description', { type: 'cleared' })).toBeNull()
     })
 
-    test('statusForArmedOf names a selection separately from a whole-entry arm', () => {
+    test('statusForArmedOf names the field for a range arm, and says how each kind is dropped', () => {
       const entry = { kind: 'pr' as const, number: 42, title: '', body: '', url: '', state: 'OPEN' }
 
-      expect(statusForArmedOf({ entry })).toBe('#42 rides your next prompt (press it again to drop it)')
-      expect(statusForArmedOf({ entry, range: { start: 0, end: 3 } })).toBe("#42's selection rides your next prompt (press the entry to drop it)")
+      expect(statusForArmedOf({ entry, field: 'description' })).toBe('#42 rides your next prompt (press it again to drop it)')
+      expect(statusForArmedOf({ entry, field: 'description', range: { start: 0, end: 3 } })).toBe(
+        "#42's description selection rides your next prompt (click it again to drop it)",
+      )
+      expect(statusForArmedOf({ entry, field: 'title', range: { start: 0, end: 3 } })).toBe("#42's title selection rides your next prompt (click it again to drop it)")
     })
 
-    test('contextTextOf quotes only the range when one is given, with wording that says so', () => {
+    test('contextTextOf quotes only the range when one is given, and the title when asked for it', () => {
       const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }
 
-      expect(contextTextOf(entry, 'acme/app')).toBe(
+      expect(contextTextOf(entry, 'acme/app', 'description')).toBe(
         "The user attached acme/app pull request #42's description from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one\n> line two',
       )
-      expect(contextTextOf(entry, 'acme/app', { start: 0, end: 8 })).toBe(
+      expect(contextTextOf(entry, 'acme/app', 'description', { start: 0, end: 8 })).toBe(
         "The user attached a selection from acme/app pull request #42's description from pull-request-pane to this prompt. " +
           'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one',
+      )
+      expect(contextTextOf(entry, 'acme/app', 'title')).toBe(
+        "The user attached acme/app pull request #42's title from pull-request-pane to this prompt. " +
+          'Edit it on GitHub with `gh pr edit 42 --title`:\n> Add login',
       )
     })
   })
@@ -527,6 +547,69 @@ describe('mod', () => {
     await kept.clock.advance(POLL_MS)
 
     const after = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+    expect(after).toBe(before)
+  })
+
+  test('a hot reload rehydrates from the store instead of showing reading…', async ($, on) => {
+    world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await settle()
+
+    // A hot reload drops this module's own in-memory `state` (a fresh `register` runs), but not
+    // the store: a second `session.start`, with no `command.run` yet, simulates that.
+    await $.session.start(SESSION)
+    const text = textOf(await $.ui.render(PANE))
+
+    expect(text).not.toContain('reading…')
+    expect(text).toContain('refreshed')
+    expect(text).toContain('#42')
+  })
+
+  test('an armed entry keeps its own text through a refresh, even if gh now answers differently', async ($, on) => {
+    const options: WorldOptions = {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'original body', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+    }
+    world(on, options)
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
+    await settle()
+
+    // As if the description changed on GitHub (or gh just answered a fresh fetch) while armed.
+    options.branchPrs = [{ number: 42, title: 'Add login', body: 'a different body entirely', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }]
+    await $.command.run(RUN)
+    await $.command.run(RUN)
+
+    const props = clientPropsOf(await $.ui.render(PANE), 'pr:42:body-select')
+    expect(props).toEqual({ lines: ['original body'] })
+  })
+
+  test('the status poll skips the entry currently armed', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'acme/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }],
+      statuses: { 42: { isDraft: false, mergeable: 'MERGEABLE', reviewDecision: '', statusCheckRollup: [] } },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await settle()
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:button' })
+    await settle()
+
+    const before = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+    await kept.clock.advance(POLL_MS)
+    const after = kept.runs.filter((argv) => argv.includes(STATUS_JSON_FIELDS)).length
+
     expect(after).toBe(before)
   })
 })

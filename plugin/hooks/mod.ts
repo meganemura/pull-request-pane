@@ -21,6 +21,7 @@
 // `Host`, a bundle of closures built once at `session.start`.
 
 import type { Elements, On, RenderElement, SessionMessage, Timer } from 'claude-code'
+import type { SelectionMessage } from './description-selection'
 
 const PANE_ID = 'pull-request-pane'
 const PANE_TITLE = 'pull-request-pane'
@@ -96,6 +97,10 @@ type Host = {
   register: () => Promise<unknown>
 }
 
+// A whole entry (the Button's arm) or a character range into its body (a drag over
+// description-selection.ts's Client): `range` absent means the whole body.
+type Armed = { entry: Entry; range?: { start: number; end: number } }
+
 type State = {
   host: Host | null
   isOpen: boolean
@@ -105,7 +110,7 @@ type State = {
   refreshedAt: string | null
   isRefreshing: boolean
   isQueued: boolean
-  armed: Entry | null
+  armed: Armed | null
   expandedStatus: Set<string>
   pollTimer: Timer | null
   isPolling: boolean
@@ -141,6 +146,38 @@ function firstLineOf(text: string): string {
 
 function entryKeyOf(entry: Pick<Entry, 'kind' | 'number'>): string {
   return `${entry.kind}:${entry.number}`
+}
+
+// `ui.message`'s `data` is `unknown` — code sent it, not the engine, so this is the one place
+// a description-selection.ts post is checked before anything trusts its shape.
+export function selectionMessageOf(data: unknown): SelectionMessage | null {
+  if (typeof data !== 'object' || data === null) return null
+  const type = Reflect.get(data, 'type')
+  if (type === 'cleared') return { type: 'cleared' }
+  if (type !== 'selected') return null
+  const start = Reflect.get(data, 'start')
+  const end = Reflect.get(data, 'end')
+  if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start) return null
+  return { type: 'selected', start, end }
+}
+
+// What a description-selection.ts message does to what is armed: 'selected' always arms this
+// entry's range, replacing whatever was armed before (only one entry at a time, matching the
+// Button's own arm); 'cleared' drops it only when this same entry was the one armed, so a stale
+// clear from a drag on an entry that is no longer the armed one does not disarm another.
+export function nextArmedOf(current: Armed | null, entry: Entry, message: SelectionMessage): Armed | null {
+  if (message.type === 'cleared') {
+    return current !== null && entryKeyOf(current.entry) === entryKeyOf(entry) ? null : current
+  }
+  return { entry, range: { start: message.start, end: message.end } }
+}
+
+// The status line for a freshly armed entry: the same wording whether the Button armed the
+// whole body or a description-selection.ts drag armed a range, save for saying which.
+export function statusForArmedOf(armed: Armed): string {
+  return armed.range === undefined
+    ? `#${armed.entry.number} rides your next prompt (press it again to drop it)`
+    : `#${armed.entry.number}'s selection rides your next prompt (press the entry to drop it)`
 }
 
 // Step 2 of the collection order, and also the cheap gate `command.run` uses to decide
@@ -283,14 +320,13 @@ async function collectEntries(host: Host, cwd: string, branch: string): Promise<
 // for its own arm-and-ride ask), then the body quoted line by line (an empty line becomes a
 // bare `>`), cut at 60 lines with a trailing marker. Never shown to the person — see
 // docs/decisions/0004 for why the prompt box itself is never touched.
-function contextTextOf(entry: Entry, repo: string): string {
+export function contextTextOf(entry: Entry, repo: string, range?: { start: number; end: number }): string {
   const kindWord = entry.kind === 'pr' ? 'pull request' : 'issue'
   const editNoun = entry.kind === 'pr' ? 'pr' : 'issue'
-  const header =
-    `The user attached ${repo} ${kindWord} #${entry.number}'s description from ` +
-    `pull-request-pane to this prompt. Edit it on GitHub with \`gh ${editNoun} edit ` +
-    `${entry.number} --body\`:`
-  const rawLines = entry.body.split('\n')
+  const body = range === undefined ? entry.body : entry.body.slice(range.start, range.end)
+  const subject = range === undefined ? `${repo} ${kindWord} #${entry.number}'s description` : `a selection from ${repo} ${kindWord} #${entry.number}'s description`
+  const header = `The user attached ${subject} from pull-request-pane to this prompt. Edit it on GitHub with \`gh ${editNoun} edit ${entry.number} --body\`:`
+  const rawLines = body.split('\n')
   const isTruncated = rawLines.length > MAX_BODY_LINES
   const kept = isTruncated ? rawLines.slice(0, MAX_BODY_LINES) : rawLines
   const quoted = kept.map((line) => (line === '' ? '>' : `> ${line}`))
@@ -443,13 +479,17 @@ async function refresh(state: State): Promise<void> {
 
 // The real element types, so the typecheck refuses a prop the engine would refuse. `Text`
 // takes no `key`: giving it one drops the whole tree (measured, see the probe this file
-// replaced), so only `Box` and `Button` below ever carry one. `Link` takes no `key` either
-// (not in its props), so it is never a direct array child — always inside a keyed `Box`.
-type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link'>
+// replaced), so only `Box`, `Button` and `Client` below ever carry one. `Link` takes no `key`
+// either (not in its props), so it is never a direct array child — always inside a keyed `Box`.
+type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link' | 'Client'>
 
-function descriptionLinesOf(ui: Ui, body: string): RenderElement[] {
-  const { Text } = ui
-  return body.split('\n').map((line) => Text({ dimColor: true, children: line }))
+// A drag over this draws its own coloured selection (description-selection.ts); this surface
+// has no absolute positioning (checked: no `position`, `top`, `left` or `zIndex` in BoxProps),
+// so the Client draws the text itself rather than sitting over a separate `Text` rendering of
+// it. Posts a `SelectionMessage` on release, read by the `ui.message` hook in `register`.
+function descriptionSelectionOf(ui: Ui, key: string, body: string): RenderElement {
+  const lines = body.split('\n')
+  return ui.Client({ key: `${key}:select`, module: './description-selection.ts', props: { lines }, width: '100%', height: lines.length })
 }
 
 function checksSegmentOf(checks: PrStatus['checks']): string {
@@ -570,9 +610,10 @@ function checksRowsOf(ui: Ui, key: string, entry: Entry, state: State, host: Hos
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, titleMaxChars: number): RenderElement {
   const { Box, Button } = ui
   const key = entryKeyOf(entry)
-  const isArmed = state.armed !== null && entryKeyOf(state.armed) === key
+  const isArmed = state.armed !== null && entryKeyOf(state.armed.entry) === key
+  const armedSuffix = !isArmed ? '' : state.armed?.range === undefined ? ' (armed)' : ' (selection armed)'
   const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
-  const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${isArmed ? ' (armed)' : ''}`
+  const label = `#${entry.number} ${kindWord} ${entry.state} ${titleFitOf(entry.title, titleMaxChars)}${armedSuffix}`
 
   return Box({
     key,
@@ -586,14 +627,14 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host, titleMaxChar
             state.armed = null
             host.status(undefined)
           } else {
-            state.armed = entry
-            host.status(`#${entry.number} rides your next prompt (press it again to drop it)`)
+            state.armed = { entry }
+            host.status(statusForArmedOf(state.armed))
           }
           host.invalidate()
         },
       }),
       ...checksRowsOf(ui, key, entry, state, host),
-      ...descriptionLinesOf(ui, entry.body),
+      descriptionSelectionOf(ui, key, entry.body),
     ],
   })
 }
@@ -637,7 +678,7 @@ export function register(on: On) {
 
   // `mods/diff`'s own guard: a second `prompt.submit` arriving while the first one's `next` is
   // still in flight must not attach the same armed entry twice.
-  let carrying: Entry | null = null
+  let carrying: Armed | null = null
 
   on('session.start', async ($, e, next) => {
     state.host = hostOf($)
@@ -676,9 +717,13 @@ export function register(on: On) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID || state.host === null) return next(e)
-    const { Box, Button, Text, Link } = await $.ui.resolve(e)
+    // `Client` is a terminal-only element (not every surface's table has one — checked: this
+    // is the only branch this plugin ever draws into, since it opens its pane with no surface
+    // override, but the guard also narrows `$.ui.resolve`'s return type to `Elements['terminal']`.
+    if (e.surface !== 'terminal') return next(e)
+    const { Box, Button, Text, Link, Client } = await $.ui.resolve(e)
     const titleMaxChars = Math.max(10, (e.props.bodyColumns ?? DEFAULT_TITLE_MAX_CHARS + TITLE_PAD_COLUMNS) - TITLE_PAD_COLUMNS)
-    return paneOf({ Box, Button, Text, Link }, state, state.host, titleMaxChars)
+    return paneOf({ Box, Button, Text, Link, Client }, state, state.host, titleMaxChars)
   })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
@@ -703,6 +748,28 @@ export function register(on: On) {
     }
   })
 
+  // A description-selection.ts Client posted this on a drag's release ('client' origin, per
+  // the d.ts: code sent it, on nobody's behalf, so `data` is input to validate, never a fact).
+  // Its `element` key is `${entryKey}:select` (set in descriptionSelectionOf), so the suffix
+  // strips to find which entry it belongs to.
+  on('ui.message', { requestId: PANE_ID }, async ($, e, next) => {
+    const host = state.host
+    const suffix = ':select'
+    if (host === null || !e.element.endsWith(suffix)) return next(e)
+    const entryKey = e.element.slice(0, -suffix.length)
+    const entry = state.entries.find((candidate) => entryKeyOf(candidate) === entryKey)
+    const message = selectionMessageOf(e.data)
+    if (entry === undefined || message === null) return next(e)
+
+    const before = state.armed
+    state.armed = nextArmedOf(before, entry, message)
+    if (state.armed !== before) {
+      host.status(state.armed === null ? undefined : statusForArmedOf(state.armed))
+      host.invalidate()
+    }
+    return next(e)
+  })
+
   // The armed entry's description rides the next prompt as context, never the prompt box
   // itself — see docs/decisions/0004. Wired exactly as `mods/diff` wires its own ask: fit the
   // text to the room the context has left, attach it on the way down, and disarm only once the
@@ -715,11 +782,11 @@ export function register(on: On) {
 
     const context = e.context ?? []
     const room = PROMPT_CONTEXT_MAX_CHARS - context.reduce((sum, block) => sum + block.length, 0)
-    const text = fittedContextTextOf(contextTextOf(asked, state.repo ?? ''), room)
+    const text = fittedContextTextOf(contextTextOf(asked.entry, state.repo ?? '', asked.range), room)
 
     if (text === undefined) {
       state.armed = null
-      host.status(`#${asked.number}'s description did not fit in the prompt and was dropped`)
+      host.status(`#${asked.entry.number}'s description did not fit in the prompt and was dropped`)
       host.invalidate()
       return next(e)
     }

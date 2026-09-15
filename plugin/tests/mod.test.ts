@@ -8,6 +8,8 @@
 import type { CommandRunInput, On, PromptSubmitInput, RenderInput, SessionMessage } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
+import { contextTextOf, nextArmedOf, selectionMessageOf, statusForArmedOf } from '../hooks/mod'
+
 tier('user')
 
 const PLUGIN = 'pull-request-pane'
@@ -176,6 +178,28 @@ function linksOf(tree: unknown): { href: string; text: string }[] {
   return linksOf(children)
 }
 
+// The `props` of a `Client` leaf keyed `key`, or undefined when there is none: a `Client`'s own
+// drawing is opaque to `textOf` (the engine loads and runs its surface module separately, never
+// through this render), so a test that cares what the Client would draw reads its props here
+// instead of walking rendered text.
+function clientPropsOf(tree: unknown, key: string): unknown {
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const found = clientPropsOf(child, key)
+      if (found !== undefined) return found
+    }
+    return undefined
+  }
+  if (typeof tree !== 'object' || tree === null) return undefined
+  const type: unknown = Reflect.get(tree, 'type')
+  const props: unknown = Reflect.get(tree, 'props')
+  if (type === 'Client' && typeof props === 'object' && props !== null && Reflect.get(props, 'key') === key) {
+    return Reflect.get(props, 'props')
+  }
+  const children: unknown = Reflect.get(tree, 'children')
+  return clientPropsOf(children, key)
+}
+
 // A Button's `onPress` is not awaited by `$.ui.press`; it finishes after a few turns of the
 // task queue. `setTimeout` is reached through the global object, as the module names no host
 // globals of its own.
@@ -220,10 +244,9 @@ describe('mod', () => {
     await $.session.start(SESSION)
     await $.command.run(RUN)
 
-    const text = textOf(await $.ui.render(PANE))
+    const props = clientPropsOf(await $.ui.render(PANE), 'pr:42:select')
 
-    expect(text).toContain('line four')
-    expect(text).toContain('line five')
+    expect(props).toEqual({ lines: ['line one', 'line two', 'line three', 'line four', 'line five'] })
   })
 
   test('a closing keyword in the PR body pulls in the issue it closes', async ($, on) => {
@@ -323,6 +346,67 @@ describe('mod', () => {
 
     expect(kept.statuses.at(-1)).toBe("#42's description did not fit in the prompt and was dropped")
     expect(textOf(await $.ui.render(PANE))).not.toContain('(armed)')
+  })
+
+  // `claude plugin test`'s kit has no call for `ui.message` (checked: it is not in
+  // EventCalls['ui'], only `render`, `resolve`, `scroll` and `focus` are — a Client's post
+  // reaches the hooks module only through the real engine, never through a test's `$`). What
+  // the `on('ui.message', ...)` hook in mod.ts does with a post is covered here as the plain
+  // functions it is built from instead: `selectionMessageOf` validates the untrusted `data`,
+  // `nextArmedOf` decides what a validated message does to what is armed, and
+  // `statusForArmedOf`/`contextTextOf` cover the two wordings a whole-entry arm and a
+  // range arm produce. The hook itself is the thin, unavoidably untested wiring between them
+  // and `state`/`host` — see docs/decisions/0004's revision for this note in full.
+  describe('description-selection message handling', () => {
+    test('selectionMessageOf accepts a valid selected or cleared message, rejects the rest', () => {
+      expect(selectionMessageOf({ type: 'selected', start: 0, end: 5 })).toEqual({ type: 'selected', start: 0, end: 5 })
+      expect(selectionMessageOf({ type: 'cleared' })).toEqual({ type: 'cleared' })
+      expect(selectionMessageOf({ type: 'selected', start: 5, end: 2 })).toBeNull()
+      expect(selectionMessageOf({ type: 'selected', start: -1, end: 2 })).toBeNull()
+      expect(selectionMessageOf({ type: 'selected', start: '0', end: 2 })).toBeNull()
+      expect(selectionMessageOf({ type: 'unknown' })).toBeNull()
+      expect(selectionMessageOf(null)).toBeNull()
+      expect(selectionMessageOf('not an object')).toBeNull()
+    })
+
+    test('nextArmedOf: selected arms this entry, replacing whatever was armed', () => {
+      const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
+      const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
+      const armedA = nextArmedOf(null, entryA, { type: 'selected', start: 0, end: 3 })
+
+      expect(armedA).toEqual({ entry: entryA, range: { start: 0, end: 3 } })
+      expect(nextArmedOf(armedA, entryB, { type: 'selected', start: 1, end: 2 })).toEqual({ entry: entryB, range: { start: 1, end: 2 } })
+    })
+
+    test('nextArmedOf: cleared drops only a selection armed on that same entry', () => {
+      const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
+      const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
+      const armedA = { entry: entryA, range: { start: 0, end: 3 } }
+
+      expect(nextArmedOf(armedA, entryA, { type: 'cleared' })).toBeNull()
+      expect(nextArmedOf(armedA, entryB, { type: 'cleared' })).toBe(armedA)
+      expect(nextArmedOf(null, entryA, { type: 'cleared' })).toBeNull()
+    })
+
+    test('statusForArmedOf names a selection separately from a whole-entry arm', () => {
+      const entry = { kind: 'pr' as const, number: 42, title: '', body: '', url: '', state: 'OPEN' }
+
+      expect(statusForArmedOf({ entry })).toBe('#42 rides your next prompt (press it again to drop it)')
+      expect(statusForArmedOf({ entry, range: { start: 0, end: 3 } })).toBe("#42's selection rides your next prompt (press the entry to drop it)")
+    })
+
+    test('contextTextOf quotes only the range when one is given, with wording that says so', () => {
+      const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/acme/app/pull/42', state: 'OPEN' }
+
+      expect(contextTextOf(entry, 'acme/app')).toBe(
+        "The user attached acme/app pull request #42's description from pull-request-pane to this prompt. " +
+          'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one\n> line two',
+      )
+      expect(contextTextOf(entry, 'acme/app', { start: 0, end: 8 })).toBe(
+        "The user attached a selection from acme/app pull request #42's description from pull-request-pane to this prompt. " +
+          'Edit it on GitHub with `gh pr edit 42 --body`:\n> line one',
+      )
+    })
   })
 
   test('rendering the pane never spawns', async ($, on) => {

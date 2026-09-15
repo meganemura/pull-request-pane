@@ -13,7 +13,9 @@ requests and issues the transcript mentions. The pane has two functions:
 1. **Description attach.** Each entry has a button. A press arms that
    entry's description to ride the person's next prompt as context (never
    the prompt box itself), so the person types one instruction and Claude
-   edits the description on GitHub.
+   edits the description on GitHub. A drag over the description arms just
+   the selected substring instead, through a `Client` surface module
+   (`plugin/hooks/description-selection.ts`).
 2. **Status.** While the pane is open, the module polls `gh` for each pull
    request's checks, review decision and mergeability, and draws the result
    beside the entry.
@@ -58,3 +60,10 @@ Simplified Technical English.
   `-p` has no pane surface. Hook failures are fail-open and appear only in
   `~/.claude/debug/<session>.txt` as `hook failed ... skipped`.
 - Design decisions go to `docs/decisions/` as short numbered notes.
+- A `Client` surface module (`description-selection.ts` is the one example) never receives `$`;
+  it is a plain `(props, surface) => RenderElement` function, referenced from `mod.ts` by a
+  relative path string (`Client({ module: './description-selection.ts', ... })`). Test its
+  pointer handling with a hand-rolled `ClientSurface` double, calling the module function
+  directly — `claude plugin test plugin`'s kit has no built-in way to drive one, and no call for
+  `ui.message` either (not in `EventCalls['ui']`), so the mod-side wiring that reads a Client's
+  post is tested as the plain functions it is built from, not end to end.

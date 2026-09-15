@@ -37,6 +37,11 @@ issue edit --body`.
 Press the same entry again to drop it before it rides anywhere. Only one entry is armed at a
 time; arming a second one replaces the first.
 
+To attach only part of a description, drag over it instead of pressing the button: the covered
+text highlights as you drag, and releasing arms just that selection (the status line and the
+entry's `(selection armed)` say so). A click with no drag clears an armed selection. Dragging
+and the button both write to the same one-armed-thing-at-a-time slot.
+
 ## Checks, review and mergeability
 
 Each pull request's status is fetched once as soon as the pane opens, and every 60 seconds
@@ -50,7 +55,10 @@ toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <rev
 (GitHub Actions, CircleCI, whatever produced it) where one exists — hover a linked check and it
 highlights, so it reads as clickable. Issues have no status.
 
-Each entry's description is drawn in full below its title and status, not cut to a few lines.
+Each entry's description is drawn in full below its title and status, not cut to a few lines. A
+single line longer than the pane is wide does not wrap for the drag; the drag-select feature is
+new (2026-09-16) and has not yet been tried in a real terminal beyond the sandbox — a report of
+anything odd there is welcome.
 
 ## Status
 

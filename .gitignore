@@ -1,0 +1,18 @@
+# Written by /plugin-types; large and version-specific. Run /plugin-types in a new checkout.
+.claude/types/
+
+# Task specs and reports handed to delegated agents. They carry the context a
+# piece of work was decided in, which includes private feedback.
+.claude-team/
+CLAUDE.local.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+node_modules/
+.env
+.env.*
+!.env.example

@@ -1,0 +1,21 @@
+{
+  // The module runs in Claude Code's own environment (no Node, no DOM) and types against
+  // the declarations `/plugin-types` writes to .claude/types/ at the repository root.
+  // From the repository root, after `/plugin-types`: `npx tsc -p plugin/hooks`. The tests
+  // under plugin/tests/ are checked by the same command, since they import the same kit.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "types": [],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react",
+    "jsxFactory": "h",
+    "jsxFragmentFactory": "Fragment",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["../../.claude/types", ".", "../tests"]
+}

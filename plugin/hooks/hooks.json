@@ -1,0 +1,4 @@
+{
+  "description": "One function-hooks module: /pull-request-pane and the pane it draws beside the transcript, refreshed after gh shell commands, finished turns and a status poll timer; a press on an entry fills the prompt box with that entry's description as a quote.",
+  "modules": ["./mod.ts"]
+}

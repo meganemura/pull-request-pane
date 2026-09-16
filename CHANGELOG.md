@@ -4,6 +4,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 stable release yet: version numbers may still change shape between releases (see README's
 "Status" section).
 
+## [0.2.0] - 2026-09-16
+
+### Added
+
+- Install through a marketplace: `claude plugin marketplace add
+  meganemura/pull-request-pane` then `claude plugin install
+  pull-request-pane@pull-request-pane`.
+
+### Fixed
+
+- Dragging over Japanese (or other wide-character) text in a title or a description selected
+  the wrong characters. Selection and word-wrap now measure display width, not character count.
+
 ## [0.1.0] - 2026-09-16
 
 ### Added

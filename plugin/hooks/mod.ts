@@ -609,12 +609,17 @@ function armedRangeFor(state: State, key: string, field: 'title' | 'description'
   return armed.range
 }
 
+// `⏭` (U+23ED) reads as an emoji glyph in some terminal fonts and rendered noticeably wider
+// than the one cell the surface allots it, overlapping the character that followed it
+// (real-terminal feedback). `~` is plain ASCII: no font can draw it wider than one cell.
+const SKIPPED_SYMBOL = '~'
+
 function checksSegmentOf(checks: PrStatus['checks']): string {
   const parts: string[] = []
   if (checks.pass > 0) parts.push(`✓${checks.pass}`)
   if (checks.fail > 0) parts.push(`✗${checks.fail}`)
   if (checks.pending > 0) parts.push(`…${checks.pending}`)
-  if (checks.skipped > 0) parts.push(`⏭${checks.skipped}`)
+  if (checks.skipped > 0) parts.push(`${SKIPPED_SYMBOL}${checks.skipped}`)
   return parts.join(' ')
 }
 
@@ -646,7 +651,7 @@ function statusWordOf(checks: PrStatus['checks']): string {
 function outcomeSymbolOf(outcome: CheckOutcome): string {
   if (outcome === 'pass') return '✓'
   if (outcome === 'fail') return '✗'
-  if (outcome === 'skipped') return '⏭'
+  if (outcome === 'skipped') return SKIPPED_SYMBOL
   return '…'
 }
 

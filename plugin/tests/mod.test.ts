@@ -497,6 +497,40 @@ describe('mod', () => {
     ])
   })
 
+  // `⏭` (the symbol this used to be) reads as an emoji glyph in some terminal fonts and drew
+  // wider than the one cell it was given, overlapping the digit right after it (real-terminal
+  // feedback). `~` is plain ASCII, so no font can widen it past one cell.
+  test('a skipped check uses a plain ASCII symbol, not one that can render wider than one cell', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
+      statuses: {
+        42: {
+          isDraft: false,
+          mergeable: 'MERGEABLE',
+          reviewDecision: '',
+          statusCheckRollup: [
+            { name: 'lint', status: 'COMPLETED', conclusion: 'SUCCESS' },
+            { name: 'legacy-check', status: 'COMPLETED', conclusion: 'SKIPPED' },
+          ],
+        },
+      },
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await settle()
+    await $.ui.render(PANE)
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:checks-toggle:button' })
+
+    const tree = await $.ui.render(PANE)
+    const text = textOf(tree)
+
+    expect(text).toContain('~1')
+    expect(text).not.toContain('⏭')
+    expect(coloredLinesOf(tree).find((line) => line.text === '~')).toEqual({ text: '~' })
+  })
+
   test('pressing the refresh button refetches entries and checks, and resets the poll', async ($, on) => {
     const kept = world(on, {
       branch: 'feature',

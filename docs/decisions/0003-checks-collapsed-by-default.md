@@ -33,7 +33,9 @@ glance — a color and a word answer "is it okay" on their own.
   wrong".
 - A press expands it to `▼ checks`, an uncoloured summary line (`✓<pass> ✗<fail> …<pending> ·
   <review decision> · <mergeable>`), then one row per check: its own symbol and colour (`✓`
-  green, `✗` red, `…` yellow, `⏭` uncoloured), its name (gh's `name` for a CheckRun, `context`
+  green, `✗` red, `…` yellow, `~` uncoloured — `⏭` originally, changed later: some terminal
+  fonts draw it emoji-wide, overlapping the character after it), its name (gh's `name` for a
+  CheckRun, `context`
   for the older StatusContext shape, a position when neither is given), and a `Link` to its run
   when gh gave a URL. A second press collapses it again. A linked check's `Text` also carries a
   `hover` colour (cyan, a colour no outcome uses) so hovering it reads as "clickable" rather than

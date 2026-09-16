@@ -1,0 +1,12 @@
+{
+  "name": "pull-request-pane",
+  "description": "A pane beside the transcript with the GitHub pull requests and issues related to the current session.",
+  "owner": { "name": "meganemura" },
+  "plugins": [
+    {
+      "name": "pull-request-pane",
+      "source": "./plugin",
+      "description": "A pane beside the transcript with the GitHub pull requests and issues related to the current session: drag a title or description to attach it to your next prompt, and watch each pull request's checks, review decision and mergeability update on a timer."
+    }
+  ]
+}

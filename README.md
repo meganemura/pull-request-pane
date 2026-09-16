@@ -16,16 +16,34 @@ issues so the two do not read as one list of the same kind of thing.
 
 ## Requirements
 
-- Claude Code 2.1.272 or later with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`
+- Claude Code 2.1.273 or later with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`
 - `gh` logged in to GitHub
 
-## Use
+## Install
+
+```sh
+claude plugin marketplace add meganemura/pull-request-pane
+claude plugin install pull-request-pane@pull-request-pane
+```
+
+Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` for every session, instead of prefixing each `claude`
+invocation, by adding it to `settings.json`'s `env`:
+
+```json
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
+  }
+}
+```
+
+Type `/pull-request-pane` to show or hide the pane.
+
+To develop against a checkout instead, run the plugin straight from its working tree:
 
 ```sh
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/pull-request-pane/plugin
 ```
-
-Type `/pull-request-pane` to show or hide the pane.
 
 ## Refresh
 

@@ -6,8 +6,15 @@ on:
   pull_request:
 
 # Every third-party action and package version below is an exact pin (a commit SHA for
-# actions, an exact version for npm packages) — see CLAUDE.md's dependency rule. Bumping any
-# of them is a deliberate edit here, not an implicit "latest" resolution on every run.
+# actions, an exact version for npm packages) — see CLAUDE.md's dependency rule. Bumping any of
+# them is a deliberate edit here, not an implicit "latest" resolution on every run.
+#
+# The claude CLI pin is a stated exception to that rule's "released at least a week ago" part:
+# `claude plugin test` and the `ui.message` event this plugin's tests exercise only exist as of
+# 2.1.273 (published the day before this pin). Every version 7+ days old lacks one or the other
+# (checked: 2.1.266 through 2.1.272 each either reject `ui.message` at validate or have no
+# `plugin test` subcommand at all). Revisit this pin once a version with both features is a week
+# old — see docs/decisions/0011.
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,7 +23,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22.23.2'
-      - run: npm install -g @anthropic-ai/claude-code@2.1.266
+      - run: npm install -g @anthropic-ai/claude-code@2.1.273
       # Writes .claude/types/claude-code.d.ts, which plugin/hooks/tsconfig.json includes.
       # Gated behind the same early-access flag the plugin itself needs (see CLAUDE.md);
       # neither this nor any gate below calls the model, so no API credential is needed.

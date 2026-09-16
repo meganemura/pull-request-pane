@@ -63,11 +63,11 @@ an issue) as a link to it on GitHub — hover it and it highlights — then a bl
 bold title, another blank line, its checks (a pull request only, its status word bold too),
 another blank line, then its full description. Drag over the title or the description to attach
 it: the covered text highlights as you drag, and releasing arms that selection to ride your next
-prompt — the status line says
-so, and the highlight stays, colored, as the only sign it is armed (dragging over all of a field
-arms the whole thing the same way). Nothing is written into the prompt box — type your
-instruction as you normally would, whatever is already there included, and press Enter. Claude
-reads the attached text beside your prompt: ask it to change the text and it edits it on GitHub
+prompt. The status line says so, and the highlight stays, colored, showing that it is armed
+(dragging over all of a field arms the whole thing the same way). Nothing is written into the
+prompt box — type your instruction as you normally would, whatever is already there included,
+and press Enter. Claude reads the attached text beside your prompt: ask it to change the text
+and it edits it on GitHub
 with `gh pr edit --body` (the description) or `gh pr edit --title` (the title); ask it something
 else about the text instead, and it answers that. Click anywhere in that same field again, with
 no drag, to drop it before it rides anywhere — on the highlight or away from it, either drops
@@ -83,18 +83,16 @@ do with what is armed.
 Each pull request's status is fetched once as soon as the pane opens, and every 60 seconds
 after that while it stays open. A pull request with no status yet shows `fetching checks…`;
 the footer below the entries reads `status updating…` while a fetch is in flight, `status
-<time>` once it lands.
-Once fetched, it draws as a `▶ checks` toggle and one coloured word — `failing` (red),
-`running` (yellow), `passing` (green), or `no checks` — so you can tell at a glance whether to
-look further. Press the
-toggle for the detail: a summary line (`✓<pass> ✗<fail> …<pending> · <review decision> ·
-<mergeable>`), then each check by name, coloured by its own outcome and linked to its run
-(GitHub Actions, CircleCI, whatever produced it) where one exists — hover a linked check and it
-highlights, so it reads as clickable. Issues have no status.
+<time>` once it lands. Once fetched, it draws as a `▶ checks` toggle and one coloured word —
+`failing` (red), `running` (yellow), `passing` (green), or `no checks` — so you can tell at a
+glance whether to look further. Press the toggle for the detail: a summary line (`✓<pass>
+✗<fail> …<pending> · <review decision> · <mergeable>`), then each check by name, coloured by
+its own outcome and linked to its run (GitHub Actions, CircleCI, whatever produced it) where
+one exists — hover a linked check and it highlights, so it reads as clickable. Issues have no
+status.
 
-Each entry's description is drawn in full below its title and status, not cut to a few lines,
-and not to a few characters either: a logical line wider than the pane wraps onto as many screen
-rows as it needs, with no `…` cutting any part of it, and a drag's position still matches a real
+Each entry's description is drawn in full below its title and status. A line wider than the pane
+wraps onto as many screen rows as it needs, and a drag's position still matches the right
 character across the wrap.
 
 ## Persistence

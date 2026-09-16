@@ -89,6 +89,24 @@ describe('description-selection geometry', () => {
     expect(visualRowsOf(['a long line here'], Number.POSITIVE_INFINITY)).toEqual([{ line: 0, startCol: 0, text: 'a long line here' }])
     expect(visualRowsOf(['a long line here'], 0)).toEqual([{ line: 0, startCol: 0, text: 'a long line here' }])
   })
+
+  // Each of these five characters is 2 terminal cells wide, not 1 — a column budget of 6 fits
+  // 3 of them (6 cells), not 6 of them, and a pointer's x is a cell count, not a character
+  // count. Getting either wrong is exactly what read as "selection doesn't work" for Japanese
+  // text (real-terminal feedback).
+  test('visualRowsOf wraps by display width, not character count, for wide characters', () => {
+    expect(visualRowsOf(['こんにちは'], 6)).toEqual([
+      { line: 0, startCol: 0, text: 'こんに' },
+      { line: 0, startCol: 3, text: 'ちは' },
+    ])
+  })
+
+  test('visualRowsOf still makes progress when a single wide character is over budget alone', () => {
+    expect(visualRowsOf(['あい'], 1)).toEqual([
+      { line: 0, startCol: 0, text: 'あ' },
+      { line: 0, startCol: 1, text: 'い' },
+    ])
+  })
 })
 
 type PointerEvent = { type: string; x: number; y: number }
@@ -191,6 +209,29 @@ describe('description-selection pointer handling', () => {
     drive.fire({ type: 'up', x: 3, y: 1 })
 
     expect(drive.posted).toEqual([{ type: 'selected', start: 5, end: 12 }])
+  })
+
+  // "こんにちは" is 5 characters, each 2 cells wide. A pointer's x is a cell count: x=2 is the
+  // start of the 2nd character ('ん'), x=6 the start of the 4th ('ち'). Treating x as a
+  // character index instead (the bug) would have posted start:2 (landing mid-string, one
+  // character late) and end:5 (clamped past the end), covering "にちは" instead of "んに".
+  test('a drag over Japanese text lands on the character under each cell, not one screen row per character', () => {
+    const drive = driveDescriptionSelection(['こんにちは'])
+
+    drive.fire({ type: 'down', x: 2, y: 0 })
+    drive.fire({ type: 'up', x: 6, y: 0 })
+
+    expect(drive.posted).toEqual([{ type: 'selected', start: 1, end: 3 }])
+  })
+
+  test('a drag over Japanese text still maps correctly across a wrap point', () => {
+    // At columns:6, "こんにちは" wraps to row 0 "こんに" (startCol 0) and row 1 "ちは" (startCol 3).
+    const drive = driveDescriptionSelection(['こんにちは'], undefined, 6)
+
+    drive.fire({ type: 'down', x: 0, y: 1 })
+    drive.fire({ type: 'up', x: 2, y: 1 })
+
+    expect(drive.posted).toEqual([{ type: 'selected', start: 3, end: 4 }])
   })
 
   test('move before any down is a hover, not a drag: nothing posted, no crash', () => {

@@ -98,17 +98,71 @@ export function selectedColumnsOf(range: OrderedRange, lineLength: number, lineI
   return { start, end }
 }
 
-// One logical line, greedily word-wrapped to `columns` cells: a break lands on the last space
-// at or before the limit, and a single word wider than `columns` hard-breaks by character (the
-// only way to keep every row within the width at all). `startCol` is the real index into the
-// logical line — not reconstructed later by re-joining words — so a wrapped word's own text
-// still slices correctly out of the original line.
+// The terminal cells one character occupies: 2 for the common CJK / fullwidth ranges (hiragana,
+// katakana, kanji, Hangul, fullwidth Latin and punctuation), 1 otherwise. Not a complete Unicode
+// East Asian Width table (an astral-plane character, a surrogate pair, still counts as two
+// column-1 units here, same as every other index in this file already treats one) — this covers
+// what broke: every column-counting function below treated one character as one cell, so a drag
+// over Japanese text (each character 2 cells wide) landed on the wrong character entirely
+// (measured, real-terminal feedback).
+function cellWidthOf(code: number): number {
+  const isWide =
+    (code >= 0x1100 && code <= 0x115f) ||
+    (code >= 0x2e80 && code <= 0xa4cf) ||
+    (code >= 0xac00 && code <= 0xd7a3) ||
+    (code >= 0xf900 && code <= 0xfaff) ||
+    (code >= 0xff00 && code <= 0xff60) ||
+    (code >= 0xffe0 && code <= 0xffe6)
+  return isWide ? 2 : 1
+}
+
+function displayWidthOf(text: string): number {
+  let width = 0
+  for (let i = 0; i < text.length; i += 1) width += cellWidthOf(text.charCodeAt(i))
+  return width
+}
+
+// The character index at or after `start` where `text`'s display width first reaches or would
+// exceed `maxWidth` cells from `start` — the point a row of at most `maxWidth` columns has to
+// end. Always advances past at least one character past `start`, so a single character wider
+// than `maxWidth` on its own (a 2-cell character at the last column of a 1-column pane) still
+// makes progress instead of looping forever; that one row ends up one cell over budget, the same
+// trade the ASCII hard-break below already makes for a word wider than the whole pane.
+function indexAtWidth(text: string, start: number, maxWidth: number): number {
+  let width = 0
+  for (let i = start; i < text.length; i += 1) {
+    const w = cellWidthOf(text.charCodeAt(i))
+    if (width + w > maxWidth && i > start) return i
+    width += w
+  }
+  return text.length
+}
+
+// The character index in `text` whose cell span covers column `x` (0-based, clamped past the
+// last character to `text.length`) — walks by display width, not character count, so a pointer
+// past a 2-cell character lands after it, not one character short.
+function charIndexAtColumn(text: string, x: number): number {
+  let col = 0
+  for (let i = 0; i < text.length; i += 1) {
+    const w = cellWidthOf(text.charCodeAt(i))
+    if (x < col + w) return i
+    col += w
+  }
+  return text.length
+}
+
+// One logical line, greedily word-wrapped to `columns` cells (measured by display width, not
+// character count): a break lands on the last space at or before the limit, and a single word
+// wider than `columns` hard-breaks by character (the only way to keep every row within the
+// width at all). `startCol` is the real index into the logical line — not reconstructed later by
+// re-joining words — so a wrapped word's own text still slices correctly out of the original
+// line.
 function wrapLineOf(text: string, columns: number): { startCol: number; text: string }[] {
-  if (!Number.isFinite(columns) || columns <= 0 || text.length <= columns) return [{ startCol: 0, text }]
+  if (!Number.isFinite(columns) || columns <= 0 || displayWidthOf(text) <= columns) return [{ startCol: 0, text }]
   const rows: { startCol: number; text: string }[] = []
   let rowStart = 0
   while (rowStart < text.length) {
-    const limit = Math.min(rowStart + columns, text.length)
+    const limit = indexAtWidth(text, rowStart, columns)
     if (limit >= text.length) {
       rows.push({ startCol: rowStart, text: text.slice(rowStart, limit) })
       break
@@ -145,12 +199,15 @@ export function visualRowsOf(lines: readonly string[], columns: number): VisualR
 
 // A pointer event's cell, as a position in the logical text: `event.y` indexes `visualRows`
 // directly (each is exactly one screen row, by construction), and `event.x` lands within that
-// row's own slice of its logical line, offset by where the row starts.
+// row's own slice of its logical line, offset by where the row starts. `charIndexAtColumn` (not
+// a plain clamp of `x` itself) is what makes this correct for a row containing any 2-cell
+// character: `x` is a terminal column, not a character index, and the two only coincide when
+// every character on the row is 1 cell wide.
 function screenPosOf(visualRows: readonly VisualRow[], event: { x: number; y: number }): Pos {
   const rowIndex = Math.min(Math.max(event.y, 0), Math.max(visualRows.length - 1, 0))
   const row = visualRows[rowIndex]
   if (row === undefined) return { line: 0, col: 0 }
-  const col = Math.min(Math.max(event.x, 0), row.text.length)
+  const col = charIndexAtColumn(row.text, Math.max(event.x, 0))
   return { line: row.line, col: row.startCol + col }
 }
 

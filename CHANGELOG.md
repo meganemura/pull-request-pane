@@ -4,6 +4,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 stable release yet: version numbers may still change shape between releases (see README's
 "Status" section).
 
+## [0.3.0] - 2026-09-18
+
+### Changed
+
+- Dragging a title or a description now opens a comment box for that span, instead of arming it
+  to ride your next prompt. Add any number of comments, across either field, plus one comment on
+  the entry as a whole; press Submit to send them all as one prompt that quotes each span. This
+  replaces 0004's "arm to ride the next prompt" design: once every span carries its own comment,
+  the comments are the instruction, so a separate typed prompt is no longer part of the flow.
+  See docs/decisions/0014.
+
 ## [0.2.0] - 2026-09-16
 
 ### Added
@@ -37,4 +48,6 @@ stable release yet: version numbers may still change shape between releases (see
 - The pane's own data persists to the plugin's store, so a hot reload during development shows
   the last known entries immediately instead of `reading…`.
 
+[0.3.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.3.0
+[0.2.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.2.0
 [0.1.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.1.0

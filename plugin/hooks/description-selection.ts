@@ -6,17 +6,17 @@
 // No absolute positioning exists on this surface's `Box` (checked: no `position`, `top`,
 // `left` or `zIndex` in BoxProps), so this replaces the plain `Text` lines it stands in for
 // rather than overlaying them — it draws the text itself, highlighted where a drag covers it or
-// where `armedRange` says the hooks module already armed.
+// where `armedRange` says the hooks module already has a pending selection.
 //
-// Must NOT know about: GitHub, `gh`, or what the posted range is used for (arming a quote is
-// the hooks module's job, driven by what this file posts through `surface.post`).
+// Must NOT know about: GitHub, `gh`, or what the posted range is used for (what happens to a
+// selection is the hooks module's job, driven by what this file posts through `surface.post`).
 
 import type { ClientElements, ClientModule, ClientSurface, RenderElement } from 'claude-code'
 
 export type DescriptionSelectionProps = {
   lines: readonly string[]
-  // What the hooks module already armed from a past drag over this same text, as absolute
-  // offsets (the same shape a 'selected' message posts) — undefined when nothing is armed here.
+  // What the hooks module already has pending from a past drag over this same text, as absolute
+  // offsets (the same shape a 'selected' message posts) — undefined when nothing is pending here.
   // Drawn as a persistent highlight while no new drag is in progress, and a click landing
   // inside it, with no movement, is how the person drops it (see onPointerOf's 'up' handling).
   armedRange?: { start: number; end: number }

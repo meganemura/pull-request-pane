@@ -1,7 +1,7 @@
 {
   "name": "pull-request-pane",
-  "version": "0.2.0",
-  "description": "A pane beside the transcript with the GitHub pull requests and issues related to the current session: drag a title or description to attach it to your next prompt, and watch each pull request's checks, review decision and mergeability update on a timer.",
+  "version": "0.3.0",
+  "description": "A pane beside the transcript with the GitHub pull requests and issues related to the current session: drag a title or description to leave a comment on it, add as many as you like, then Submit sends them all as one prompt. Watch each pull request's checks, review decision and mergeability update on a timer.",
   "author": {
     "name": "meganemura"
   }

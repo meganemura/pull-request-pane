@@ -1,6 +1,6 @@
 # 0004. Arm a description to ride the next prompt, instead of filling the prompt box
 
-- Status: accepted
+- Status: superseded by [0014](0014-review-comments-replace-the-single-arm.md)
 - Date: 2026-09-16
 
 ## Context

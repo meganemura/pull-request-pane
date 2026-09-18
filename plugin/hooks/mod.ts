@@ -1,21 +1,22 @@
 // The plugin's one function-hooks module (the validator admits one per plugin). `/pull-
 // request-pane` opens a pane beside the transcript with the pull requests and issues related
 // to this session: the checked-out branch's pull request first, then the issues its body
-// closes, then anything the transcript names. A drag over an entry's title or description arms
-// the covered text to ride the person's next prompt as context: it never touches the prompt
-// box, so nothing already typed there is lost. The person types one instruction and presses
-// Enter; Claude reads the text beside it and, asked to change it, edits it on GitHub through
-// `gh pr edit` / `gh issue edit` — asked something else, it answers that instead, since
-// attaching a selection is also how someone asks a question about it. Clicking the highlighted
-// text again, with no drag, drops it before it rides anywhere.
+// closes, then anything the transcript names. A drag over an entry's title or description opens
+// a comment box for that span; Enter adds it to the entry's own list, any number of times,
+// across either field. A second, always-present box takes one comment on the entry as a whole.
+// Pressing Submit sends every comment for that entry as one prompt that quotes each span, in
+// place of the person's own next prompt — this is a review pane, not a quoting one, so the
+// comments are the instruction (see docs/decisions/0014, superseding 0004's "ride the next
+// prompt as context").
 //
 // While the pane is open, a 60-second timer refetches each pull request's checks, review
 // decision and mergeability and draws them beside the entry; the timer starts when the pane
 // opens and stops when it closes.
 //
-// Must NOT know about: how the description gets edited (that is the model's job, driven by
-// the armed text, never this file's); GitHub authentication (`gh auth status` failing is shown
-// as a line in the pane, not handled); paragraph- or line-level selection (a later milestone).
+// Must NOT know about: how a comment gets acted on (that is the model's job, driven by the
+// prompt Submit sends, never this file's); GitHub authentication (`gh auth status` failing is
+// shown as a line in the pane, not handled); paragraph- or line-level selection (a later
+// milestone).
 //
 // It loads only where Claude Code has function hooks enabled. The engine's validator reads
 // this file statically, so every call on `$` is spelled `$.noun.event(...)` and `$` is handed
@@ -23,7 +24,23 @@
 // `Host`, a bundle of closures built once at `session.start`.
 
 import type { Elements, On, RenderElement, SessionMessage, Timer } from 'claude-code'
-import type { SelectionMessage } from './description-selection'
+import {
+  EMPTY_REVIEW,
+  WHOLE_LABEL,
+  commentCountOf,
+  feedbackTextOf,
+  hasUnsentTextOf,
+  selectionMessageOf,
+  shortQuoteOf,
+  withSelection,
+  withSpanCommitted,
+  withSpanRemoved,
+  withSpanText,
+  withWholeCommitted,
+  withWholeRemoved,
+  withWholeText,
+} from './review'
+import type { Field, Review } from './review'
 
 const PANE_ID = 'pull-request-pane'
 const PANE_TITLE = 'pull-request-pane'
@@ -32,13 +49,7 @@ const COMMAND = 'pull-request-pane'
 // `gh` reaches the network; this bounds a hung call, not a slow one.
 const GH_TIMEOUT_MS = 15_000
 
-const MAX_BODY_LINES = 60
 const POLL_MS = 60_000
-
-// `prompt.submit`'s `context` is capped at this many characters total, across every entry it
-// carries (the d.ts states the cap; matched here rather than discovered by a rejected prompt).
-const PROMPT_CONTEXT_MAX_CHARS = 32_000
-const CONTEXT_CUT_NOTE = '(The rest of this description was cut: it did not fit in the prompt.)'
 
 const NOT_IN_REPOSITORY_TEXT = 'not in a GitHub repository'
 const NO_RELATED_TEXT = 'no related pull request or issue'
@@ -93,6 +104,7 @@ type Host = {
   cwd: () => Promise<string>
   messages: () => Promise<readonly SessionMessage[]>
   run: (argv: readonly string[], cwd: string) => Promise<{ exitCode: number; stdout: string; stderr: string }>
+  submit: (text: string) => Promise<{ drop?: string }>
   status: (text: string | undefined) => void
   every: (ms: number, fn: () => void) => Timer
   open: () => Promise<void>
@@ -102,13 +114,8 @@ type Host = {
   register: () => Promise<unknown>
   storeGet: (key: string) => Promise<unknown>
   storeSet: (key: string, value: unknown) => Promise<void>
+  focus: (key: string) => Promise<unknown>
 }
-
-// A character range into one entry's title or description (a drag over
-// description-selection.ts's Client, reused for both fields — which one posted is told apart
-// by the `element` key suffix in the `ui.message` hook). There is no whole-entry arm: dragging
-// over all of a field's text is how the whole thing gets armed.
-type Armed = { entry: Entry; field: 'title' | 'description'; range: { start: number; end: number } }
 
 type State = {
   host: Host | null
@@ -119,7 +126,10 @@ type State = {
   refreshedAt: string | null
   isRefreshing: boolean
   isQueued: boolean
-  armed: Armed | null
+  // One entry's pending review comments, by `entryKeyOf`. An entry with nothing in it (yet) is
+  // not a key here — see `reviewOf`, which hands back `EMPTY_REVIEW` for one that is missing.
+  review: Map<string, Review>
+  isSubmitting: boolean
   expandedStatus: Set<string>
   pollTimer: Timer | null
   isPolling: boolean
@@ -134,6 +144,7 @@ function hostOf($: any): Host {
     cwd: () => $.session.cwd(),
     messages: () => $.session.messages(),
     run: (argv, cwd) => $.process.run(argv, { cwd, timeoutMs: GH_TIMEOUT_MS }),
+    submit: (text) => $.prompt.submit({ text }),
     status: (text) => $.ui.status(text),
     every: (ms, fn) => $.clock.every(ms, fn),
     open: () => $.ui.open({ id: PANE_ID, title: PANE_TITLE }),
@@ -143,6 +154,7 @@ function hostOf($: any): Host {
     register: () => $.command.register({ name: COMMAND, description: 'Show or hide the pull-request-pane' }),
     storeGet: (key) => $.store.get(key),
     storeSet: (key, value) => $.store.set(key, value),
+    focus: (key) => $.ui.focus({ requestId: PANE_ID, key }),
   }
 }
 
@@ -195,52 +207,48 @@ function snapshotFromStore(value: unknown): Snapshot | null {
   return { repo, entries, refreshedAt }
 }
 
-// While an entry has something armed, its title or body must not change under the person: a
-// drag's offsets are computed against one version of that text, and refreshing it
-// mid-interaction — a real edit landing on GitHub, or just a re-fetch of the same content under
-// a new object — would leave an offset pointing at the wrong thing (real-terminal feedback: the
-// automatic refresh should leave an armed entry alone).
-export function withArmedPreserved(state: Pick<State, 'armed' | 'entries'>, freshEntries: Entry[]): Entry[] {
-  if (state.armed === null) return freshEntries
-  const armedKey = entryKeyOf(state.armed.entry)
-  const previous = state.entries.find((entry) => entryKeyOf(entry) === armedKey)
-  if (previous === undefined) return freshEntries
-  return freshEntries.map((entry) => (entryKeyOf(entry) === armedKey ? previous : entry))
+function reviewOf(state: Pick<State, 'review'>, key: string): Review {
+  return state.review.get(key) ?? EMPTY_REVIEW
 }
 
-// `ui.message`'s `data` is `unknown` — code sent it, not the engine, so this is the one place
-// a description-selection.ts post is checked before anything trusts its shape.
-export function selectionMessageOf(data: unknown): SelectionMessage | null {
-  if (typeof data !== 'object' || data === null) return null
-  const type = Reflect.get(data, 'type')
-  if (type === 'cleared') return { type: 'cleared' }
-  if (type !== 'selected') return null
-  const start = Reflect.get(data, 'start')
-  const end = Reflect.get(data, 'end')
-  if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start) return null
-  return { type: 'selected', start, end }
+// True while an entry's review has anything a refresh must not disturb: a pending selection, a
+// committed span (its offsets point into the frozen text), an overall comment, or unsent text
+// still sitting in an Input. `commentCountOf` alone would miss the first and the last of those.
+function hasReviewActivityOf(review: Review): boolean {
+  return review.selection !== null || review.spans.length > 0 || review.whole !== null || hasUnsentTextOf(review)
 }
 
-// What a description-selection.ts message does to what is armed: 'selected' always arms this
-// entry's field and range, replacing whatever was armed before (only one thing at a time,
-// matching the Button's own arm); 'cleared' drops it only when this same entry and field was
-// the one armed, so a stale clear from a Client that is no longer the armed one does not disarm
-// another. description-selection.ts itself only posts 'cleared' for a click landing inside its
-// own `armedRange` prop, so in practice a mismatched field never reaches here — checked anyway,
-// since `data` is input to validate, not a fact.
-export function nextArmedOf(current: Armed | null, entry: Entry, field: 'title' | 'description', message: SelectionMessage): Armed | null {
-  if (message.type === 'cleared') {
-    return current !== null && entryKeyOf(current.entry) === entryKeyOf(entry) && current.field === field ? null : current
+// While an entry has review activity, its title or body must not change under the person: a
+// span's offsets are computed against one version of that text, and refreshing it mid-review — a
+// real edit landing on GitHub, or just a re-fetch of the same content under a new object — would
+// leave an offset pointing at the wrong thing, or a quote in a Submit's prompt reading as
+// something the person never actually selected.
+export function withReviewPreserved(state: Pick<State, 'review' | 'entries'>, freshEntries: Entry[]): Entry[] {
+  const activeKeys = new Set([...state.review].filter(([, review]) => hasReviewActivityOf(review)).map(([key]) => key))
+  if (activeKeys.size === 0) return freshEntries
+  return freshEntries.map((entry) => {
+    const key = entryKeyOf(entry)
+    if (!activeKeys.has(key)) return entry
+    return state.entries.find((candidate) => entryKeyOf(candidate) === key) ?? entry
+  })
+}
+
+// A key with review activity whose entry is missing from `priorEntries` fell out of
+// `state.entries` since it was last set — usually a transient `collectEntries` error that
+// blanked the list — so `withReviewPreserved` could not freeze its text and handed back the
+// fresh entry instead. Keeping that review would risk a committed span's offsets slicing the
+// wrong characters out of text they were never actually drawn from, and a Submit quoting it
+// silently. Dropping it is the same trade 0014 accepted for a manual refresh, just reached a
+// different way.
+export function withOrphanedReviewDropped(review: ReadonlyMap<string, Review>, priorEntries: readonly Entry[]): Map<string, Review> {
+  const priorKeys = new Set(priorEntries.map(entryKeyOf))
+  const next = new Map(review)
+  for (const [key, entryReview] of review) {
+    if (hasReviewActivityOf(entryReview) && !priorKeys.has(key)) next.delete(key)
   }
-  return { entry, field, range: { start: message.start, end: message.end } }
+  return next
 }
 
-// The status line for a freshly armed entry: says which field, and that clicking the
-// highlighted text again (not a button — there is none, see docs/decisions/0007) drops it.
-export function statusForArmedOf(armed: Armed): string {
-  const fieldWord = armed.field === 'title' ? 'title' : 'description'
-  return `#${armed.entry.number}'s ${fieldWord} selection rides your next prompt (click it again to drop it)`
-}
 
 // Step 2 of the collection order, and also the cheap gate `command.run` uses to decide
 // whether there is anything to open a pane over: a failing `git rev-parse` here is read the
@@ -377,44 +385,18 @@ async function collectEntries(host: Host, cwd: string, branch: string): Promise<
   return { kind: 'ok', repo, entries }
 }
 
-// What an armed entry's title or description reads as once it rides a prompt as context: a
-// sentence telling the model what the person attached, then the text quoted line by line (an
-// empty line becomes a bare `>`), cut at 60 lines with a trailing marker. Never shown to the
-// person — see docs/decisions/0004 for why the prompt box itself is never touched. `gh edit` is
-// named as what to reach for only if the person's own prompt asks for a change — the attach is
-// also how someone asks a question about the selection, and every prompt naming the same `gh
-// edit` command regardless would have told the model to edit GitHub for a question too.
-export function contextTextOf(entry: Entry, repo: string, field: 'title' | 'description', range: { start: number; end: number }): string {
-  const kindWord = entry.kind === 'pr' ? 'pull request' : 'issue'
-  const editNoun = entry.kind === 'pr' ? 'pr' : 'issue'
-  const source = field === 'title' ? entry.title : entry.body
-  const body = source.slice(range.start, range.end)
-  const flag = field === 'title' ? '--title' : '--body'
-  const subject = `a selection from ${repo} ${kindWord} #${entry.number}'s ${field}`
-  const header = `The user attached ${subject} from pull-request-pane to this prompt. If they ask you to change it, edit it on GitHub with \`gh ${editNoun} edit ${entry.number} ${flag}\`; if they ask something else about it, answer that instead:`
-  const rawLines = body.split('\n')
-  const isTruncated = rawLines.length > MAX_BODY_LINES
-  const kept = isTruncated ? rawLines.slice(0, MAX_BODY_LINES) : rawLines
-  const quoted = kept.map((line) => (line === '' ? '>' : `> ${line}`))
-  if (isTruncated) quoted.push(`> …(truncated, ${rawLines.length - MAX_BODY_LINES} more lines)`)
-  return [header, ...quoted].join('\n')
+// The header line for one entry's Submit prompt: `Feedback (pull-request-pane) on PR #42:` or
+// `... on Issue #7:`. GitHub's PR/Issue wording is this file's own job — review.ts's
+// `feedbackTextOf` only orders, quotes and joins what this hands it.
+export const FEEDBACK_HEADER_PREFIX = 'Feedback (pull-request-pane) on '
+
+export function reviewHeaderOf(entry: Pick<Entry, 'kind' | 'number'>): string {
+  const kindWord = entry.kind === 'pr' ? 'PR' : 'Issue'
+  return `${FEEDBACK_HEADER_PREFIX}${kindWord} #${entry.number}:`
 }
 
-// `mods/diff`'s own fitting: whole when it fits the context room left, else as many whole
-// lines as fit plus a cut note — never a line sliced mid-word. `undefined` when not even the
-// header fits, so the caller can drop the attach instead of sending a note with no body.
-export function fittedContextTextOf(text: string, room: number): string | undefined {
-  if (text.length <= room) return text
-  const kept: string[] = []
-  let used = CONTEXT_CUT_NOTE.length
-  for (const line of text.split('\n')) {
-    const cost = line.length + 1
-    if (used + cost > room) break
-    kept.push(line)
-    used += cost
-  }
-  const hasBody = kept.length > 1
-  return hasBody ? `${kept.join('\n')}\n${CONTEXT_CUT_NOTE}` : undefined
+function sourceOf(entry: Pick<Entry, 'title' | 'body'>, field: Field): string {
+  return field === 'title' ? entry.title : entry.body
 }
 
 // The spec's aggregation, item by item: a CheckRun (has `conclusion`) is read by its
@@ -484,10 +466,10 @@ async function pollStatuses(state: State): Promise<void> {
   host.invalidate()
   try {
     const cwd = await host.cwd()
-    // Not skipped for the armed entry, unlike withArmedPreserved: this only ever replaces
-    // `status`, never `title` or `body`, so it cannot move the text an offset points into —
-    // there is nothing here for arming to protect against (the lead's own correction, having
-    // first paused this too).
+    // Not skipped for an entry with review activity, unlike withReviewPreserved: this only ever
+    // replaces `status`, never `title` or `body`, so it cannot move the text an offset points
+    // into — there is nothing here for a review to protect against (the lead's own correction,
+    // having first paused this too).
     const numbers = state.entries.filter((entry) => entry.kind === 'pr').map((entry) => entry.number)
     for (const number of numbers) {
       const status = await fetchStatusOf(host, cwd, number)
@@ -530,7 +512,9 @@ async function refresh(state: State): Promise<void> {
       state.refreshedAt = new Date().toLocaleTimeString()
       if (result.kind === 'ok') {
         state.repo = result.repo
-        state.entries = withArmedPreserved(state, result.entries)
+        const priorEntries = state.entries
+        state.entries = withReviewPreserved(state, result.entries)
+        state.review = withOrphanedReviewDropped(state.review, priorEntries)
         state.error = null
         const snapshot: Snapshot = { repo: state.repo, entries: state.entries, refreshedAt: state.refreshedAt }
         void host.storeSet(STORE_KEY, snapshot).catch(() => undefined)
@@ -546,10 +530,9 @@ async function refresh(state: State): Promise<void> {
 }
 
 // The refresh button's own ask, distinct from the automatic refreshes `turn.complete` and the
-// `gh ` Bash hook already trigger: those two preserve an armed entry's text
-// (`withArmedPreserved`) so a drag in progress does not have its offsets invalidated out from
-// under it; a person pressing the button is asking outright for the latest state, so dropping
-// whatever was armed is the expected trade, not a bug to guard against. Restarts the poll timer
+// `gh ` Bash hook already trigger: all three preserve an entry with review activity
+// (`withReviewPreserved`, inside `refresh`) so a drag or a half-written comment in progress does
+// not have its offsets invalidated, or its text lost, out from under it. Restarts the poll timer
 // too, so the person is not left waiting up to another `POLL_MS` for the checks fetch this same
 // press just asked for. `refresh` before `pollStatuses`, not together: `refresh` replaces
 // `state.entries` wholesale from `gh pr list`, whose records carry no `status` field, so
@@ -557,8 +540,6 @@ async function refresh(state: State): Promise<void> {
 // status it had just written in (checked: run concurrently, the test below saw `fetching
 // checks…` where it expects `no checks`) — the opposite of what asking for both at once is for.
 async function manualRefresh(state: State, host: Host): Promise<void> {
-  state.armed = null
-  host.status(undefined)
   stopPoll(state)
   startPoll(state, host)
   host.invalidate()
@@ -568,9 +549,10 @@ async function manualRefresh(state: State, host: Host): Promise<void> {
 
 // The real element types, so the typecheck refuses a prop the engine would refuse. `Text`
 // takes no `key`: giving it one drops the whole tree (measured, see the probe this file
-// replaced), so only `Box`, `Button` and `Client` below ever carry one. `Link` takes no `key`
-// either (not in its props), so it is never a direct array child — always inside a keyed `Box`.
-type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link' | 'Client'>
+// replaced), so only `Box`, `Button`, `Input` and `Client` below ever carry one. `Link` takes no
+// `key` either (not in its props), so it is never a direct array child — always inside a keyed
+// `Box`.
+type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link' | 'Input' | 'Client'>
 
 // The `element` key suffix for each field's Client — distinct and non-overlapping (neither is a
 // suffix of the other), so the `ui.message` hook can tell them apart by a plain `endsWith`
@@ -582,31 +564,32 @@ const BODY_SELECT_SUFFIX = ':body-select'
 // the title and the description); this surface has no absolute positioning (checked: no
 // `position`, `top`, `left` or `zIndex` in BoxProps), so the Client draws the text itself rather
 // than sitting over a separate `Text` rendering of it. Posts a `SelectionMessage` on release,
-// read by the `ui.message` hook in `register`. `armedRange` is what is already armed for this
-// field (undefined otherwise), so a past drag's highlight and its click-to-drop both survive a
-// redraw, not just the moment the mouse button is held.
+// read by the `ui.message` hook in `register`. `pendingRange` is the entry's own pending
+// selection for this field, undefined otherwise, so a past drag's highlight survives a redraw,
+// not just the moment the mouse button is held.
 function textSelectionOf(
   ui: Ui,
   key: string,
   suffix: string,
   text: string,
-  armedRange: { start: number; end: number } | undefined,
+  pendingRange: { start: number; end: number } | undefined,
   bold: boolean,
 ): RenderElement {
   const lines = text.split('\n')
   return ui.Client({
     key: `${key}${suffix}`,
     module: './description-selection.ts',
-    props: { lines, ...(armedRange === undefined ? {} : { armedRange }), ...(bold ? { bold: true } : {}) },
+    props: { lines, ...(pendingRange === undefined ? {} : { armedRange: pendingRange }), ...(bold ? { bold: true } : {}) },
     width: '100%',
   })
 }
 
-// What is armed for one entry's one field, or undefined when nothing (or the other field) is.
-function armedRangeFor(state: State, key: string, field: 'title' | 'description'): { start: number; end: number } | undefined {
-  const armed = state.armed
-  if (armed === null || entryKeyOf(armed.entry) !== key || armed.field !== field) return undefined
-  return armed.range
+// The entry's pending selection, for one field, or undefined when nothing is pending (or it is
+// pending on the other field).
+function pendingRangeFor(review: Review, field: Field): { start: number; end: number } | undefined {
+  const selection = review.selection
+  if (selection === null || selection.field !== field) return undefined
+  return { start: selection.start, end: selection.end }
 }
 
 // `⏭` (U+23ED) reads as an emoji glyph in some terminal fonts and rendered noticeably wider
@@ -767,17 +750,184 @@ function kindDividerOf(ui: Ui, bodyColumns: number): RenderElement {
   return ui.Text({ dimColor: true, children: '─'.repeat(Math.max(bodyColumns - PANE_PADDING_RIGHT, 0)) })
 }
 
-// No button: a press-to-arm-the-whole-thing control was redundant once a drag could already
-// cover all of a field's text, and it needed its own separate "(armed)" label where a range arm
-// already has the highlight itself for feedback (real-terminal feedback: the drag-select design
-// this note superseded, docs/decisions/0007). The title and description are each their own
-// textSelectionOf row, both drag-selectable. `rowGap` separates the identifier, the title, the
-// checks (grouped into one child so the gap lands around them, not between each check line) and
-// the description from each other — asked for, to make the entry easier to read at a glance.
+// `isSubmitting` guards a press arriving while a previous submit is still in flight. Refusing
+// with unsent text, or with zero comments, guards the other press patterns: focus already on
+// Submit, one Enter that would otherwise spend a whole turn on an empty or half-written prompt.
+async function submitReview(state: State, host: Host, entry: Entry): Promise<void> {
+  if (state.isSubmitting) return
+  const key = entryKeyOf(entry)
+  const review = reviewOf(state, key)
+  if (hasUnsentTextOf(review)) {
+    host.status(`#${entry.number} has text in a comment box; press Enter to add it, or clear it`)
+    return
+  }
+  if (commentCountOf(review) === 0) {
+    host.status(`#${entry.number} has no comments to submit`)
+    return
+  }
+
+  state.isSubmitting = true
+  try {
+    const text = feedbackTextOf(reviewHeaderOf(entry), { title: entry.title, body: entry.body }, review.spans, review.whole)
+    const result = await host.submit(text)
+    if (result.drop === undefined) {
+      state.review.delete(key)
+      host.status(undefined)
+      host.invalidate()
+    }
+    // A `drop` leaves the entry's review exactly where it was, so the person can press Submit
+    // again without redoing anything.
+  } finally {
+    state.isSubmitting = false
+  }
+}
+
+// The transitions behind an `Input` or a `Button`, each one line so the closure drawn beside it
+// stays one line too (the test kit cannot type into an `Input`, so these are what
+// review.test.ts's plain functions cover instead). No `host.invalidate()` on an `onInput`: the
+// `Input` already shows what the person types, so redrawing on every keystroke is wasted work,
+// and it can move the cursor out from under the person's hands. The mirror kept in `state.review`
+// exists so a redraw triggered by something else (a `turn.complete`, another entry's own action)
+// hands the typed text back rather than losing it.
+function onSpanTextInput(state: State, key: string, text: string): void {
+  state.review.set(key, withSpanText(reviewOf(state, key), text))
+}
+
+function onSpanTextSubmit(state: State, host: Host, key: string, text: string): void {
+  state.review.set(key, withSpanCommitted(reviewOf(state, key), text))
+  host.invalidate()
+}
+
+function onSpanRemove(state: State, host: Host, key: string, index: number): void {
+  state.review.set(key, withSpanRemoved(reviewOf(state, key), index))
+  host.invalidate()
+}
+
+function onWholeTextInput(state: State, key: string, text: string): void {
+  state.review.set(key, withWholeText(reviewOf(state, key), text))
+}
+
+function onWholeTextSubmit(state: State, host: Host, key: string, text: string): void {
+  state.review.set(key, withWholeCommitted(reviewOf(state, key), text))
+  host.invalidate()
+}
+
+function onWholeRemove(state: State, host: Host, key: string): void {
+  state.review.set(key, withWholeRemoved(reviewOf(state, key)))
+  host.invalidate()
+}
+
+function commentRowOf(ui: Ui, key: string, quote: string, comment: string, onRemove: () => void): RenderElement {
+  const { Box, Button, Text } = ui
+  return Box({
+    key,
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [Button({ key: `${key}:remove`, label: 'x', onPress: onRemove }), Text({ dimColor: true, children: `> ${quote}` }), Text({ children: comment })],
+  })
+}
+
+// The pending selection's own comment box: a quote line above an `Input`. Only one of an entry's
+// two textSelectionOf rows can have posted the selection this draws from — `pendingRangeFor`
+// decided which one draws the live highlight, and `selection.field` says which text to slice.
+function pendingCommentRowOf(ui: Ui, state: State, host: Host, entry: Entry, key: string, review: Review): RenderElement | null {
+  const selection = review.selection
+  if (selection === null) return null
+  const { Box, Input, Text } = ui
+  const text = sourceOf(entry, selection.field).slice(selection.start, selection.end)
+  return Box({
+    key: `${key}:span-input-row`,
+    flexDirection: 'column',
+    children: [
+      Text({ dimColor: true, children: `> ${shortQuoteOf(text)}` }),
+      Input({
+        key: `${key}:span-input`,
+        label: 'comment',
+        placeholder: 'Enter adds it; empty Enter drops the selection',
+        value: review.spanText,
+        autoFocus: true,
+        onInput: (value) => onSpanTextInput(state, key, value),
+        onSubmit: (value) => onSpanTextSubmit(state, host, key, value),
+      }),
+    ],
+  })
+}
+
+// Every span already committed, each with its quote and its `x` remove button, then the one
+// overall comment (if any), the same shape with its own remove button and no quote to draw.
+function committedRowsOf(ui: Ui, state: State, host: Host, entry: Entry, key: string, review: Review): RenderElement {
+  const { Box, Button, Text } = ui
+  const rows: RenderElement[] = review.spans.map((span, index) =>
+    commentRowOf(ui, `${key}:c${index}`, shortQuoteOf(sourceOf(entry, span.field).slice(span.start, span.end)), span.comment, () =>
+      onSpanRemove(state, host, key, index),
+    ),
+  )
+  if (review.whole !== null) {
+    const whole = review.whole
+    rows.push(
+      Box({
+        key: `${key}:whole`,
+        flexDirection: 'row',
+        columnGap: 1,
+        children: [Button({ key: `${key}:whole:remove`, label: 'x', onPress: () => onWholeRemove(state, host, key) }), Text({ children: `${WHOLE_LABEL} ${whole}` })],
+      }),
+    )
+  }
+  return Box({ key: `${key}:comments`, flexDirection: 'column', children: rows })
+}
+
+// Always drawn, whether or not anything else is pending: the one place to leave a comment that
+// is not about any particular span.
+function wholeInputRowOf(ui: Ui, state: State, host: Host, key: string, review: Review): RenderElement {
+  const { Box, Input } = ui
+  return Box({
+    key: `${key}:whole-input-row`,
+    children: [
+      Input({
+        key: `${key}:whole-input`,
+        label: 'overall',
+        placeholder: 'a comment on the whole entry',
+        value: review.wholeText,
+        onInput: (value) => onWholeTextInput(state, key, value),
+        onSubmit: (value) => onWholeTextSubmit(state, host, key, value),
+      }),
+    ],
+  })
+}
+
+function submitRowOf(ui: Ui, state: State, host: Host, entry: Entry, key: string, review: Review): RenderElement {
+  const { Box, Button, Text } = ui
+  const n = commentCountOf(review)
+  return Box({
+    key: `${key}:actions`,
+    flexDirection: 'row',
+    columnGap: 1,
+    children: [
+      Button({
+        key: `${key}:submit`,
+        label: 'Submit',
+        onPress: () => {
+          submitReview(state, host, entry).catch((error: unknown) => host.log(`pull-request-pane: submit failed: ${messageOf(error)}`))
+        },
+      }),
+      Text({ dimColor: true, children: n === 1 ? '1 comment' : `${n} comments` }),
+    ],
+  })
+}
+
+// No button to arm the whole entry: a drag already covers all of a field's text the same way
+// (docs/decisions/0007). The title and description are each their own textSelectionOf row, both
+// drag-selectable, then whatever the review has going: a pending selection's own comment box,
+// every comment already committed, the always-present overall-comment box, and Submit.
+// `rowGap` separates the identifier, the title, the checks (grouped into one child so the gap
+// lands around them, not between each check line) and the description from each other — asked
+// for, to make the entry easier to read at a glance.
 function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host): RenderElement {
   const { Box } = ui
   const key = entryKeyOf(entry)
+  const review = reviewOf(state, key)
   const checksRows = checksRowsOf(ui, key, entry, state, host)
+  const pendingRow = pendingCommentRowOf(ui, state, host, entry, key, review)
 
   return Box({
     key,
@@ -785,9 +935,13 @@ function entryBoxOf(ui: Ui, entry: Entry, state: State, host: Host): RenderEleme
     rowGap: 1,
     children: [
       identifierRowOf(ui, key, entry),
-      textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, armedRangeFor(state, key, 'title'), true),
+      textSelectionOf(ui, key, TITLE_SELECT_SUFFIX, entry.title, pendingRangeFor(review, 'title'), true),
       ...(checksRows.length === 0 ? [] : [Box({ key: `${key}:checks`, flexDirection: 'column', children: checksRows })]),
-      textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, armedRangeFor(state, key, 'description'), false),
+      textSelectionOf(ui, key, BODY_SELECT_SUFFIX, entry.body, pendingRangeFor(review, 'description'), false),
+      ...(pendingRow === null ? [] : [pendingRow]),
+      committedRowsOf(ui, state, host, entry, key, review),
+      wholeInputRowOf(ui, state, host, key, review),
+      submitRowOf(ui, state, host, entry, key, review),
     ],
   })
 }
@@ -832,16 +986,13 @@ export function register(on: On) {
     refreshedAt: null,
     isRefreshing: false,
     isQueued: false,
-    armed: null,
+    review: new Map(),
+    isSubmitting: false,
     expandedStatus: new Set(),
     pollTimer: null,
     isPolling: false,
     statusAt: null,
   }
-
-  // `mods/diff`'s own guard: a second `prompt.submit` arriving while the first one's `next` is
-  // still in flight must not attach the same armed entry twice.
-  let carrying: Armed | null = null
 
   on('session.start', async ($, e, next) => {
     state.host = hostOf($)
@@ -894,8 +1045,8 @@ export function register(on: On) {
     // is the only branch this plugin ever draws into, since it opens its pane with no surface
     // override, but the guard also narrows `$.ui.resolve`'s return type to `Elements['terminal']`.
     if (e.surface !== 'terminal') return next(e)
-    const { Box, Button, Text, Link, Client } = await $.ui.resolve(e)
-    return paneOf({ Box, Button, Text, Link, Client }, state, state.host, e.props.bodyColumns)
+    const { Box, Button, Text, Link, Input, Client } = await $.ui.resolve(e)
+    return paneOf({ Box, Button, Text, Link, Input, Client }, state, state.host, e.props.bodyColumns)
   })
 
   on('ui.close', { id: PANE_ID }, async ($, e, next) => {
@@ -928,55 +1079,28 @@ export function register(on: On) {
   on('ui.message', { requestId: PANE_ID }, async ($, e, next) => {
     const host = state.host
     if (host === null) return next(e)
-    const field: 'title' | 'description' | null = e.element.endsWith(TITLE_SELECT_SUFFIX) ? 'title' : e.element.endsWith(BODY_SELECT_SUFFIX) ? 'description' : null
+    const field: Field | null = e.element.endsWith(TITLE_SELECT_SUFFIX) ? 'title' : e.element.endsWith(BODY_SELECT_SUFFIX) ? 'description' : null
     if (field === null) return next(e)
     const suffix = field === 'title' ? TITLE_SELECT_SUFFIX : BODY_SELECT_SUFFIX
-    const entryKey = e.element.slice(0, -suffix.length)
-    const entry = state.entries.find((candidate) => entryKeyOf(candidate) === entryKey)
+    const key = e.element.slice(0, -suffix.length)
+    const entry = state.entries.find((candidate) => entryKeyOf(candidate) === key)
     const message = selectionMessageOf(e.data)
     if (entry === undefined || message === null) return next(e)
 
-    const before = state.armed
-    state.armed = nextArmedOf(before, entry, field, message)
-    if (state.armed !== before) {
-      host.status(state.armed === null ? undefined : statusForArmedOf(state.armed))
-      host.invalidate()
+    const review = reviewOf(state, key)
+    state.review.set(key, withSelection(review, message.type === 'selected' ? { field, start: message.start, end: message.end } : null))
+    host.invalidate()
+
+    if (message.type === 'selected') {
+      // The `Input` may not be drawn yet when this runs; its own `autoFocus` prop is the second
+      // path to the same end, so a failure here is not the only way the person's keyboard lands
+      // on the comment field.
+      try {
+        await host.focus(`${key}:span-input`)
+      } catch (error) {
+        host.log(`pull-request-pane: focus failed: ${messageOf(error)}`)
+      }
     }
     return next(e)
-  })
-
-  // The armed entry's description rides the next prompt as context, never the prompt box
-  // itself — see docs/decisions/0004. Wired exactly as `mods/diff` wires its own ask: fit the
-  // text to the room the context has left, attach it on the way down, and disarm only once the
-  // prompt actually entered (a drop leaves it armed, so a refused prompt does not silently
-  // spend the one attach the person meant to make).
-  on('prompt.submit', async ($, e, next) => {
-    const host = state.host
-    const asked = state.armed
-    if (host === null || asked === null || carrying === asked) return next(e)
-
-    const context = e.context ?? []
-    const room = PROMPT_CONTEXT_MAX_CHARS - context.reduce((sum, block) => sum + block.length, 0)
-    const text = fittedContextTextOf(contextTextOf(asked.entry, state.repo ?? '', asked.field, asked.range), room)
-
-    if (text === undefined) {
-      state.armed = null
-      host.status(`#${asked.entry.number}'s ${asked.field} did not fit in the prompt and was dropped`)
-      host.invalidate()
-      return next(e)
-    }
-
-    carrying = asked
-    try {
-      const result = await next({ ...e, context: [...context, text] })
-      if (result.drop === undefined && state.armed === asked) {
-        state.armed = null
-        host.status(undefined)
-        host.invalidate()
-      }
-      return result
-    } finally {
-      carrying = null
-    }
   })
 }

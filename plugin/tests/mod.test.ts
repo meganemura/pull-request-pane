@@ -8,7 +8,8 @@
 import type { CommandRunInput, On, RenderInput, SessionMessage } from 'claude-code'
 import { describe, expect, mock, test, tier } from 'claude-code/testing'
 
-import { contextTextOf, fittedContextTextOf, nextArmedOf, selectionMessageOf, statusForArmedOf, withArmedPreserved } from '../hooks/mod'
+import { FEEDBACK_HEADER_PREFIX, reviewHeaderOf, withOrphanedReviewDropped, withReviewPreserved } from '../hooks/mod'
+import { EMPTY_REVIEW, selectionMessageOf } from '../hooks/review'
 
 tier('user')
 
@@ -44,6 +45,7 @@ type WorldOptions = {
   // Seeds `$.store` before `session.start` runs, so a test can simulate a hot reload: the
   // module's own in-memory `state` is gone, but this (a real store's persistence) is not.
   store?: Record<string, unknown>
+  submit?: (text: string) => { text: string } | { drop: string }
 }
 
 // The world beneath the module: a checkout on `branch` (or none, when `branch` is null), a
@@ -55,7 +57,18 @@ function world(on: On, options: WorldOptions = {}) {
   const closed: string[] = []
   const logged: string[] = []
   const statuses: (string | undefined)[] = []
+  const submittedTexts: string[] = []
   const clock = mock.clock(on)
+
+  // A chain event, not a plain call: the terminal fake answers with the shape `prompt.submit`
+  // itself resolves to (`{ text }` or `{ drop }`), never wrapped in `{ value }`.
+  on('prompt.submit', ($, e) => {
+    submittedTexts.push(e.text)
+    return options.submit ? options.submit(e.text) : { text: e.text }
+  })
+  // Not a plain call: `ui.focus` is a genuine chain event whose own core moves the ring for
+  // real, so the stub only lets `next(e)` reach that core rather than replacing it.
+  on('ui.focus', ($, e, next) => next(e))
 
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -128,7 +141,7 @@ function world(on: On, options: WorldOptions = {}) {
     return { value: undefined }
   })
 
-  return { runs, opened, closed, logged, statuses, clock, store }
+  return { runs, opened, closed, logged, statuses, submittedTexts, clock, store }
 }
 
 // The strings a drawn tree carries: a Text's joined children, a Button's label.
@@ -187,6 +200,20 @@ function linksOf(tree: unknown): { href: string; text: string }[] {
     return [{ href: typeof href === 'string' ? href : '', text: textOf(children) }]
   }
   return linksOf(children)
+}
+
+function buttonsOf(tree: unknown): { key: string; label: string }[] {
+  if (Array.isArray(tree)) return tree.flatMap(buttonsOf)
+  if (typeof tree !== 'object' || tree === null) return []
+  const type: unknown = Reflect.get(tree, 'type')
+  const props: unknown = Reflect.get(tree, 'props')
+  const children: unknown = Reflect.get(tree, 'children')
+  if (type === 'Button') {
+    const key = typeof props === 'object' && props ? Reflect.get(props, 'key') : undefined
+    const label = typeof props === 'object' && props ? Reflect.get(props, 'label') : undefined
+    return [{ key: typeof key === 'string' ? key : '', label: typeof label === 'string' ? label : '' }]
+  }
+  return buttonsOf(children)
 }
 
 // The `props` of a `Client` leaf keyed `key`, or undefined when there is none: a `Client`'s own
@@ -289,17 +316,16 @@ describe('mod', () => {
     expect(text.indexOf(divider)).toBeLessThan(text.indexOf('#12'))
   })
 
-  // There is no button to press any more (docs/decisions/0007): every arm is a drag over a
-  // title or description Client, and `claude plugin test`'s kit has no call for `ui.message`
-  // (checked: not in EventCalls['ui'], only `render`, `resolve`, `scroll` and `focus` are — a
-  // Client's post reaches the hooks module only through the real engine). So the whole arming
-  // path — `selectionMessageOf` validating a post, `nextArmedOf` deciding what it does to what
-  // is armed, `withArmedPreserved` and `pollStatuses` around a refresh, `contextTextOf` and
-  // `fittedContextTextOf` building and fitting what rides the prompt — is covered here as the
-  // plain functions it is built from, not end to end; `on('ui.message', ...)` and
-  // `on('prompt.submit', ...)` in mod.ts are the thin, unavoidably untested wiring between them
-  // and `state`/`host`.
-  describe('description-selection message handling', () => {
+  // There is no ui.message call in `claude plugin test`'s kit (checked: not in EventCalls['ui'],
+  // only `render`, `resolve`, `scroll` and `focus` are — a Client's post reaches the hooks
+  // module only through the real engine), so a drag can never seed `state.review` from inside a
+  // test. `selectionMessageOf` validating a post is covered directly here; the rest of the drag
+  // path — every `with*` transition, `feedbackTextOf`, `withReviewPreserved` — is covered in
+  // review.test.ts as the plain functions it is built from; `on('ui.message', ...)` in mod.ts is
+  // the thin, unavoidably untested wiring between a post and `state.review`. Submit itself IS a
+  // real Button, reachable through `$.ui.press` — its zero-comment refusal is covered below; its
+  // success path is not, for the same reason a drag cannot seed the spans it would send.
+  describe('review message handling', () => {
     test('selectionMessageOf accepts a valid selected or cleared message, rejects the rest', () => {
       expect(selectionMessageOf({ type: 'selected', start: 0, end: 5 })).toEqual({ type: 'selected', start: 0, end: 5 })
       expect(selectionMessageOf({ type: 'cleared' })).toEqual({ type: 'cleared' })
@@ -311,82 +337,86 @@ describe('mod', () => {
       expect(selectionMessageOf('not an object')).toBeNull()
     })
 
-    test('nextArmedOf: selected arms this entry and field, replacing whatever was armed', () => {
-      const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
-      const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
-      const armedA = nextArmedOf(null, entryA, 'description', { type: 'selected', start: 0, end: 3 })
-
-      expect(armedA).toEqual({ entry: entryA, field: 'description', range: { start: 0, end: 3 } })
-      expect(nextArmedOf(armedA, entryB, 'title', { type: 'selected', start: 1, end: 2 })).toEqual({ entry: entryB, field: 'title', range: { start: 1, end: 2 } })
+    test('reviewHeaderOf names PR or Issue and the number', () => {
+      expect(reviewHeaderOf({ kind: 'pr', number: 42 })).toBe(`${FEEDBACK_HEADER_PREFIX}PR #42:`)
+      expect(reviewHeaderOf({ kind: 'issue', number: 7 })).toBe(`${FEEDBACK_HEADER_PREFIX}Issue #7:`)
     })
 
-    test('nextArmedOf: cleared drops only a selection armed on that same entry and field', () => {
-      const entryA = { kind: 'pr' as const, number: 1, title: '', body: '', url: '', state: 'OPEN' }
-      const entryB = { kind: 'pr' as const, number: 2, title: '', body: '', url: '', state: 'OPEN' }
-      const armedA = { entry: entryA, field: 'description' as const, range: { start: 0, end: 3 } }
-
-      expect(nextArmedOf(armedA, entryA, 'description', { type: 'cleared' })).toBeNull()
-      expect(nextArmedOf(armedA, entryA, 'title', { type: 'cleared' })).toBe(armedA)
-      expect(nextArmedOf(armedA, entryB, 'description', { type: 'cleared' })).toBe(armedA)
-      expect(nextArmedOf(null, entryA, 'description', { type: 'cleared' })).toBeNull()
-    })
-
-    test('statusForArmedOf names the field being armed', () => {
-      const entry = { kind: 'pr' as const, number: 42, title: '', body: '', url: '', state: 'OPEN' }
-
-      expect(statusForArmedOf({ entry, field: 'description', range: { start: 0, end: 3 } })).toBe(
-        "#42's description selection rides your next prompt (click it again to drop it)",
-      )
-      expect(statusForArmedOf({ entry, field: 'title', range: { start: 0, end: 3 } })).toBe("#42's title selection rides your next prompt (click it again to drop it)")
-    })
-
-    test('contextTextOf quotes only the range, from the title or the description as asked', () => {
-      const entry = { kind: 'pr' as const, number: 42, title: 'Add login', body: 'line one\nline two', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }
-
-      expect(contextTextOf(entry, 'meganemura/app', 'description', { start: 0, end: 8 })).toBe(
-        "The user attached a selection from meganemura/app pull request #42's description from pull-request-pane to this prompt. " +
-          'If they ask you to change it, edit it on GitHub with `gh pr edit 42 --body`; if they ask something else about it, answer that instead:\n> line one',
-      )
-      expect(contextTextOf(entry, 'meganemura/app', 'title', { start: 0, end: entry.title.length })).toBe(
-        "The user attached a selection from meganemura/app pull request #42's title from pull-request-pane to this prompt. " +
-          'If they ask you to change it, edit it on GitHub with `gh pr edit 42 --title`; if they ask something else about it, answer that instead:\n> Add login',
-      )
-    })
-
-    test('fittedContextTextOf keeps whole lines up to room, cuts with a note, or drops entirely', () => {
-      expect(fittedContextTextOf('short', 100)).toBe('short')
-      // Not even the note fits alongside a first line: dropped entirely, not a note with no body.
-      expect(fittedContextTextOf('a'.repeat(50), 10)).toBeUndefined()
-
-      const cutNote = '(The rest of this description was cut: it did not fit in the prompt.)'
-      // 10 ten-character lines: long enough that the note plus two of them is still less than
-      // the whole text, so the room actually forces a cut instead of fitting everything.
-      const lines = Array.from({ length: 10 }, (_, i) => `line ${i}`.padEnd(10, ' '))
-      const text = lines.join('\n')
-      const room = cutNote.length + 11 + 11 // two 10-character lines, each plus its '\n'
-      expect(fittedContextTextOf(text, room)).toBe(`${lines[0]}\n${lines[1]}\n${cutNote}`)
-    })
-
-    test('withArmedPreserved keeps the armed entry\'s own object, lets every other one refresh', () => {
-      const armedEntry = { kind: 'pr' as const, number: 1, title: 'old title', body: 'old body', url: '', state: 'OPEN' }
+    test('withReviewPreserved keeps an entry with review activity, lets every other one refresh', () => {
+      const reviewedEntry = { kind: 'pr' as const, number: 1, title: 'old title', body: 'old body', url: '', state: 'OPEN' }
       const otherEntry = { kind: 'pr' as const, number: 2, title: 'other', body: 'other body', url: '', state: 'OPEN' }
-      const state = { armed: { entry: armedEntry, field: 'description' as const, range: { start: 0, end: 3 } }, entries: [armedEntry, otherEntry] }
+      const review = new Map([['pr:1', { selection: { field: 'description' as const, start: 0, end: 3 }, spanText: '', spans: [], whole: null, wholeText: '' }]])
+      const state = { review, entries: [reviewedEntry, otherEntry] }
 
       const fresh = [
         { kind: 'pr' as const, number: 1, title: 'NEW title', body: 'NEW body', url: '', state: 'OPEN' },
         { kind: 'pr' as const, number: 2, title: 'other', body: 'fresher other body', url: '', state: 'OPEN' },
       ]
 
-      const result = withArmedPreserved(state, fresh)
+      const result = withReviewPreserved(state, fresh)
 
-      expect(result[0]).toBe(armedEntry)
+      expect(result[0]).toBe(reviewedEntry)
       expect(result[1]).toBe(fresh[1])
     })
 
-    test('withArmedPreserved is a no-op when nothing is armed', () => {
+    test('withReviewPreserved is a no-op when no entry has review activity', () => {
       const entries = [{ kind: 'pr' as const, number: 1, title: 't', body: 'b', url: '', state: 'OPEN' }]
-      expect(withArmedPreserved({ armed: null, entries: [] }, entries)).toBe(entries)
+      expect(withReviewPreserved({ review: new Map(), entries: [] }, entries)).toBe(entries)
     })
+
+    // A `collectEntries` error blanks `state.entries` entirely; if the same entry then
+    // reappears under the same key on a later, successful refresh, `withReviewPreserved` cannot
+    // find it in the (now empty) `priorEntries` to freeze its text against, so a review left
+    // over from before the entry disappeared would otherwise carry offsets into text nobody can
+    // vouch for any more (0014's own note on this).
+    test('withOrphanedReviewDropped drops a review whose entry is missing from priorEntries, keeps the rest', () => {
+      const withSpan = { selection: null, spanText: '', spans: [{ field: 'title' as const, start: 0, end: 3, comment: 'c' }], whole: null, wholeText: '' }
+      const withUnsentText = { selection: null, spanText: 'typing', spans: [], whole: null, wholeText: '' }
+      const review = new Map([
+        ['pr:1', withSpan],
+        ['pr:2', withUnsentText],
+        ['pr:3', EMPTY_REVIEW],
+      ])
+      const priorEntries = [{ kind: 'pr' as const, number: 2, title: 't', body: 'b', url: '', state: 'OPEN' }]
+
+      const result = withOrphanedReviewDropped(review, priorEntries)
+
+      expect(result.has('pr:1')).toBe(false)
+      expect(result.get('pr:2')).toBe(withUnsentText)
+      expect(result.has('pr:3')).toBe(true)
+    })
+  })
+
+  test('pressing Submit with zero comments sends nothing and sets the status', async ($, on) => {
+    const kept = world(on, {
+      branch: 'feature',
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+    await $.ui.render(PANE)
+
+    await $.ui.press({ plugin: PLUGIN, key: 'pr:42:submit' })
+    await settle()
+
+    expect(kept.submittedTexts).toEqual([])
+    expect(kept.statuses.at(-1)).toBe('#42 has no comments to submit')
+  })
+
+  test('the Submit button and comment count are drawn for every entry', async ($, on) => {
+    world(on, {
+      branch: 'feature',
+      repo: 'meganemura/app',
+      branchPrs: [{ number: 42, title: 'Add login', body: 'na', url: 'https://github.com/meganemura/app/pull/42', state: 'OPEN' }],
+    })
+    await $.session.start(SESSION)
+    await $.command.run(RUN)
+
+    const tree = await $.ui.render(PANE)
+
+    expect(buttonsOf(tree).some((button) => button.key === 'pr:42:submit' && button.label === 'Submit')).toBe(true)
+    expect(textOf(tree)).toContain('0 comments')
   })
 
   test('rendering the pane never spawns', async ($, on) => {

@@ -4,6 +4,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 stable release yet: version numbers may still change shape between releases (see README's
 "Status" section).
 
+## [Unreleased]
+
+### Added
+
+- The pane draws in the Code tab of Claude Code Desktop, the drag-to-comment `Client`s
+  included. Before, the desktop showed the pane with nothing in it.
+
 ## [0.3.0] - 2026-09-18
 
 ### Changed

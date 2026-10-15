@@ -552,7 +552,12 @@ async function manualRefresh(state: State, host: Host): Promise<void> {
 // replaced), so only `Box`, `Button`, `Input` and `Client` below ever carry one. `Link` takes no
 // `key` either (not in its props), so it is never a direct array child — always inside a keyed
 // `Box`.
-type Ui = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text' | 'Link' | 'Input' | 'Client'>
+//
+// The pane draws on the terminal and on Claude Code Desktop: both tables have these six
+// elements, `Client` included, and a desktop `Client` takes the pointer in cells as the terminal
+// does. Other surfaces go to `next(e)`.
+type DrawnSurface = 'terminal' | 'desktop'
+type Ui = Pick<Elements[DrawnSurface], 'Box' | 'Button' | 'Text' | 'Link' | 'Input' | 'Client'>
 
 // The `element` key suffix for each field's Client — distinct and non-overlapping (neither is a
 // suffix of the other), so the `ui.message` hook can tell them apart by a plain `endsWith`
@@ -1041,10 +1046,9 @@ export function register(on: On) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID || state.host === null) return next(e)
-    // `Client` is a terminal-only element (not every surface's table has one — checked: this
-    // is the only branch this plugin ever draws into, since it opens its pane with no surface
-    // override, but the guard also narrows `$.ui.resolve`'s return type to `Elements['terminal']`.
-    if (e.surface !== 'terminal') return next(e)
+    // `Client` is in the terminal's and the desktop's tables only (the mobile app has none), and
+    // the guard also narrows `$.ui.resolve`'s return type to those two tables.
+    if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     const { Box, Button, Text, Link, Input, Client } = await $.ui.resolve(e)
     return paneOf({ Box, Button, Text, Link, Input, Client }, state, state.host, e.props.bodyColumns)
   })

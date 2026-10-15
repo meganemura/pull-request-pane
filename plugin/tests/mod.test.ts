@@ -118,7 +118,7 @@ function world(on: On, options: WorldOptions = {}) {
 
   on('ui.open', ($, e) => {
     opened.push(e.id)
-    return { value: undefined }
+    return { value: { isPlaced: true } }
   })
   on('ui.close', ($, e) => {
     closed.push(e.id)
@@ -636,4 +636,71 @@ describe('mod', () => {
     expect(text).toContain('#42')
   })
 
+})
+
+// Claude Code Desktop draws the pane too, its `Client`s included. The kit's `mount` draws the
+// pane on a surface it names and drives a `Client`'s pointer in cells, as a desktop reports
+// them, so here the drag-to-comment path runs end to end.
+const DESKTOP_PANE: RenderInput<'Pane'> = { ...PANE, surface: 'desktop' }
+
+// A drawn tree as JSON, less each element's `press` handle: the engine numbers handles per
+// render, so two renders of one tree differ there and nowhere else.
+function shapeOf(tree: unknown): string {
+  return JSON.stringify(tree, (key, value: unknown) => (key === 'press' ? undefined : value))
+}
+
+const LOGIN_PR: GhRecord = {
+  number: 42,
+  title: 'Add login',
+  body: 'Add a login form to the settings page.',
+  url: 'https://github.com/meganemura/app/pull/42',
+  state: 'OPEN',
+}
+
+describe('mod on the desktop surface', () => {
+  test('the desktop draws the same tree as the terminal', async ($, on) => {
+    world(on, { branch: 'feature', repo: 'meganemura/app', branchPrs: [LOGIN_PR] })
+    await $.session.start({ ...SESSION, surface: 'desktop' })
+    await $.command.run(RUN)
+    // The first status poll runs unawaited; let it land so both renders see the same line.
+    await settle()
+
+    const desktop = await $.ui.render(DESKTOP_PANE)
+    expect(textOf(desktop)).toContain('#42')
+    expect(shapeOf(desktop)).toBe(shapeOf(await $.ui.render(PANE)))
+  })
+
+  test('a drag over the description on the desktop opens the comment field, and Submit quotes the span', async ($, on) => {
+    const kept = world(on, { branch: 'feature', repo: 'meganemura/app', branchPrs: [LOGIN_PR] })
+    await $.session.start({ ...SESSION, surface: 'desktop' })
+    await $.command.run(RUN)
+
+    const ui = await $.ui.mount({
+      plugin: PLUGIN,
+      surface: 'desktop',
+      component: 'Pane',
+      requestId: PLUGIN,
+      props: DESKTOP_PANE.props,
+      viewport: DESKTOP_PANE.viewport,
+    })
+    await ui.resize({ columns: 80, rows: 1, in: 'pr:42:body-select' })
+    // Cells 6 to 11 of the description's one line hold `login`.
+    await ui.pointer({ type: 'down', x: 6, y: 0, button: 'left', in: 'pr:42:body-select' })
+    await ui.pointer({ type: 'move', x: 11, y: 0, button: 'left', in: 'pr:42:body-select' })
+    await ui.pointer({ type: 'up', x: 11, y: 0, button: 'left', in: 'pr:42:body-select' })
+    await settle()
+    // The world answers `ui.invalidate` itself, so the mounted drawing is drawn again by hand.
+    await ui.redraw()
+
+    expect(await ui.find({ type: 'Input', key: 'pr:42:span-input' })).toBeDefined()
+    await ui.input({ key: 'pr:42:span-input', text: 'say which login' })
+    await ui.redraw()
+    await ui.press({ key: 'pr:42:submit' })
+    await settle()
+
+    const sent = kept.submittedTexts.at(-1) ?? ''
+    expect(sent).toContain('> login')
+    expect(sent).toContain('say which login')
+    await ui.unmount()
+  })
 })

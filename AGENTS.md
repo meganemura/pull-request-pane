@@ -55,7 +55,8 @@ English. Follow ASD-STE100 Simplified Technical English.
   timer, keep the result, and draw from the kept result.
 - Every `Pane` element prop must be one the surface declares. One unknown
   prop drops the whole tree without a message. Type the element constructors
-  with `Elements['terminal']` so the compiler catches it.
+  with `Elements['terminal' | 'desktop']`, the two surfaces the pane draws
+  on, so the compiler catches it.
 - Tests are `plugin/tests/*.test.ts`, run with
   `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test plugin`. They stub
   `process.run` (so no test calls the real `gh`), `ui.status`, `store.get`/

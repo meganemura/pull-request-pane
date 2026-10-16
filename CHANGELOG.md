@@ -4,7 +4,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This pr
 stable release yet: version numbers may still change shape between releases (see README's
 "Status" section).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-16
 
 ### Added
 
@@ -55,6 +55,7 @@ stable release yet: version numbers may still change shape between releases (see
 - The pane's own data persists to the plugin's store, so a hot reload during development shows
   the last known entries immediately instead of `reading…`.
 
+[0.4.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.4.0
 [0.3.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.3.0
 [0.2.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.2.0
 [0.1.0]: https://github.com/meganemura/pull-request-pane/releases/tag/pull-request-pane--v0.1.0

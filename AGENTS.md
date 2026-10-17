@@ -38,6 +38,8 @@ dependency. The module calls `gh` through the engine's `$.process.run`.
 
 The repository is public. Commit messages, comments, README and docs are in
 English. Follow ASD-STE100 Simplified Technical English.
+`README.ja.md` is the Japanese translation of `README.md`, and the two
+change in the same commit.
 
 ## Rules
 

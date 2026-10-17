@@ -4,7 +4,7 @@
 
 ![The pane beside the transcript, showing a merged pull request with its checks passing](docs/images/pane.png)
 
-A Claude Code plugin (a Claude Mod) that shows the GitHub pull requests
+A Claude Code plugin (a mod) that shows the GitHub pull requests
 related to the current session in a pane beside the transcript.
 
 - Drag over an entry's title or description to leave a comment on that span.
@@ -19,7 +19,7 @@ issues so the two do not read as one list of the same kind of thing.
 
 ## Requirements
 
-- Claude Code 2.1.273 or later with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`
+- Claude Code 2.1.273 or later. Claude Code 2.1.287 and later load mods by default. On an older version, set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`.
 - A terminal session, or the Code tab of Claude Code Desktop. Print mode (`-p`) has no pane.
 - `gh` logged in to GitHub
 
@@ -30,23 +30,12 @@ claude plugin marketplace add meganemura/pull-request-pane
 claude plugin install pull-request-pane@pull-request-pane
 ```
 
-Set `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` for every session, instead of prefixing each `claude`
-invocation, by adding it to `settings.json`'s `env`:
-
-```json
-{
-  "env": {
-    "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"
-  }
-}
-```
-
 Type `/pull-request-pane` to show or hide the pane.
 
 To develop against a checkout instead, run the plugin straight from its working tree:
 
 ```sh
-CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir /path/to/pull-request-pane/plugin
+claude --plugin-dir /path/to/pull-request-pane/plugin
 ```
 
 ### Claude Code Desktop

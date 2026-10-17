@@ -5,7 +5,7 @@ Context for agents that work in this repository.
 ## What this is
 
 pull-request-pane, a Claude Code plugin whose behavior lives in one hooks
-module (a "Claude Mod"). It draws a pane beside the transcript with the
+module (a mod). It draws a pane beside the transcript with the
 GitHub pull requests that relate to the current session: the pull request of
 the checked-out branch first, then the issues it closes and the pull
 requests and issues the transcript mentions. The pane has two functions:
@@ -41,8 +41,10 @@ English. Follow ASD-STE100 Simplified Technical English.
 
 ## Rules
 
-- Function hooks are early access. The module loads only where
-  `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` is set. The API can change between
+- Mods are early access. Claude Code 2.1.287 and later load them by
+  default; CI pins 2.1.280, where the module loads only with
+  `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, so the CI and test commands set
+  it. The API can change between
   releases. The types come from `/plugin-types`, which writes
   `.claude/types/claude-code.d.ts` at the repository root; that directory is
   gitignored, so run `/plugin-types` once in a new checkout.
@@ -71,10 +73,9 @@ English. Follow ASD-STE100 Simplified Technical English.
   `.github/workflows/test.yml` runs the same three on every push and pull
   request, against a pinned `claude` CLI and `typescript` version — none of
   the three calls the model, so the workflow needs no API credential.
-- Development loop: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir
-  "$PWD/plugin"` in a repository that has a pull request, in a real terminal.
-  `-p` has no pane surface. Hook failures are fail-open and appear only in
-  `~/.claude/debug/<session>.txt` as `hook failed ... skipped`.
+- Development loop: `claude --plugin-dir "$PWD/plugin"` in a repository
+  that has a pull request, in a real terminal. `-p` has no pane surface.
+  Hook failures are fail-open and appear only in `~/.claude/debug/<session>.txt` as `hook failed ... skipped`.
 - Design decisions go to `docs/decisions/` as short numbered notes.
 - A `Client` surface module (`description-selection.ts` is the one example) never receives `$`;
   it is a plain `(props, surface) => RenderElement` function, referenced from `mod.ts` by a
